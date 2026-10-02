@@ -7,3 +7,9 @@ evm_version = "cancun"
 auto_detect_solc = false
 optimizer = true
 optimizer_runs = 200
+
+[profile.default.invariant]
+runs = 128
+depth = 64
+fail_on_revert = true
+show_metrics = true
