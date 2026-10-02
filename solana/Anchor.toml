@@ -1,0 +1,18 @@
+[toolchain]
+anchor_version = "1.2.0"
+solana_version = "4.1.2"
+package_manager = "npm"
+
+[features]
+resolution = true
+skip-lint = false
+
+[programs.localnet]
+settlement_lab = "7zLj7iNbNvV6m6nogUKgUuJKNw5wUWtfSvVTmcgqpfzK"
+
+[provider]
+cluster = "Localnet"
+wallet = "../.runtime/build-wallet.json"
+
+[workspace]
+members = ["programs/settlement_lab"]
