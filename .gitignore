@@ -1,0 +1,53 @@
+# Rust / Anchor generated artifacts (keep Cargo.lock and Anchor.toml)
+target/
+.anchor/
+test-ledger/
+*.rs.bk
+
+# Foundry generated artifacts (keep foundry.toml, foundry.lock, and dependencies)
+out/
+cache/
+broadcast/
+
+# Node / TypeScript (keep package manifests and dependency lockfiles)
+node_modules/
+dist/
+build/
+coverage/
+.nyc_output/
+.npm/
+.pnpm-store/
+.yarn/cache/
+.yarn/unplugged/
+.yarn/install-state.gz
+*.tsbuildinfo
+
+# Python helper caches
+__pycache__/
+*.pyc
+
+# Environment files; sanitized examples are intentional public configuration
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Generated local credentials and runtime state
+.keys/
+keys/
+keypairs/
+wallets/
+*-keypair.json
+/id.json
+.local/
+.runtime/
+.anvil/
+logs/
+*.log
+*.log.*
+
+# Editor / OS temporary files
+*.swp
+*.swo
+*~
+.DS_Store
