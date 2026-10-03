@@ -1,6 +1,7 @@
 use anchor_lang::prelude::*;
 
 pub mod configuration;
+pub mod order_state;
 pub mod protocol_encoding;
 use configuration::*;
 
