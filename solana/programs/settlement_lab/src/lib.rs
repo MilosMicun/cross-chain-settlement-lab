@@ -1,5 +1,7 @@
 use anchor_lang::prelude::*;
 
+pub mod protocol_encoding;
+
 // Local build identity; no deployment or settlement instruction is provided.
 declare_id!("7zLj7iNbNvV6m6nogUKgUuJKNw5wUWtfSvVTmcgqpfzK");
 
