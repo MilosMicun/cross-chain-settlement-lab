@@ -10,7 +10,8 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "check:imports": "node src/check-imports.ts"
+    "check:imports": "node src/check-imports.ts",
+    "test:initialization": "node --test --test-concurrency=1 src/tests/initialization.test.ts"
   },
   "dependencies": {
     "@anchor-lang/core": "1.2.0",

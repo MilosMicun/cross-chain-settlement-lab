@@ -1,9 +1,12 @@
 # Local development
 
-Only compilation and local RPC health are verified. The Solidity library and
-Anchor program have no callable business methods/instructions. The TypeScript
-file checks client imports without issuing network requests. There is no
-settlement implementation, deployment, or cross-chain integration test.
+Compilation, local RPC health, canonical protocol encoding, EVM settlement,
+and one-time Anchor initialization have been verified within their respective
+test scopes. The EVM Settlement implements atomic purchases, permanent
+cancellation, and terminal replay handling. The Anchor program currently
+exposes only initialize, tested against the real SBF program on an isolated
+local validator. Solana order creation, escrow, receipt settlement/refunds,
+and cross-chain transport/integration are not yet implemented.
 
 ## Pinned environment
 
@@ -62,6 +65,7 @@ source scripts/env.sh
 bash scripts/check-tools.sh
 bash scripts/check-builds.sh
 bash scripts/check-rpc.sh
+bash scripts/check-solana-initialization.sh
 ```
 
 The installer checks existing executables before installing missing components;
@@ -76,12 +80,14 @@ Build outputs: `evm/out/`, `evm/cache/`, `solana/target/deploy/settlement_lab.so
 Build logs and RPC evidence remain under `.local/logs/`. Runtime ledgers, wallet
 files, and per-run logs remain under `.runtime/`; all are ignored.
 
-The public program ID is a compile-only identity, not an active deployment.
-A clean build can generate a new disposable key; `--ignore-keys` allows that key
-to differ from the fixed source/IDL ID. The private build key is never a
-publication artifact. Before any future deployment, explicitly select the real
-local key/ID and synchronize the configuration and source; no deployment is
-performed by these scripts.
+The fixed public program ID is
+`7zLj7iNbNvV6m6nogUKgUuJKNw5wUWtfSvVTmcgqpfzK` in source, Anchor.toml,
+IDL, and the local initialization fixture. A clean build can generate a disposable
+build key; `--ignore-keys` permits it to differ from that fixed ID. The private
+build key is never a publication artifact. The initialization runner uses
+`--upgradeable-program <ID> <SBF binary> <disposable authority>` to load the
+program and genuine linked loader ProgramData at genesis. This is a local test
+fixture, not a production deployment procedure or evidence of a public deployment.
 
 RPC checks reserve ports 18545 (Anvil), 18899/18900 (Solana RPC/WebSocket),
 18901 (faucet), and 19010–19040 (validator services). Occupied ports cause failure;
@@ -92,10 +98,11 @@ processes. It does not alter the default Solana wallet/RPC configuration.
 
 ## Verified results and build notes
 
-- Forge compiled the empty library using Solidity 0.8.30; formatting passed.
+- Forge compilation and formatting checks passed for the existing EVM contracts
+  using Solidity 0.8.30.
 - `cargo check --workspace --locked` and `cargo fmt --all -- --check` passed.
-- Anchor produced a 57,072-byte SBF binary and JSON/TypeScript IDL with zero
-  instructions; the program ID matches the current disposable build key.
+- Anchor produced the SBF binary and JSON/TypeScript IDL with exactly one
+  business instruction, `initialize`, at the unchanged public program ID.
 - TypeScript's full declaration check and the import check passed. Dependencies
   are installed without lifecycle scripts; the optional bigint-buffer native
   addon is absent and emits a warning before using its working JavaScript fallback.
@@ -120,4 +127,107 @@ Anchor forwards additional Cargo arguments to both SBF and IDL test runners;
 passing `--locked` through those separators breaks one runner. The build helper
 runs a locked host check and verifies that Cargo.lock remains byte-for-byte
 unchanged through Anchor's build. These are compilation checks, not settlement
-tests or evidence of cross-chain safety.
+tests or evidence of cross-chain safety. The 13 existing Rust encoding tests
+remain separate from validator integration checks.
+
+## One-time initialization check
+
+After building with `bash scripts/check-builds.sh`, run:
+
+```bash
+source scripts/env.sh
+npm --prefix harness run typecheck
+npm --prefix harness run check:imports
+bash scripts/check-solana-initialization.sh
+```
+
+The shell wrapper selects the existing isolated tools. The Python runner requires
+the generated SBF/JSON IDL artifacts; the TypeScript test uses the generated
+IDL type helper and existing Anchor/web3/SPL clients with Node's built-in test
+runner. It checks the same Solana TCP/UDP ports as the RPC check before startup,
+then runs in a fresh unprivileged user/network namespace containing only the
+loopback interface. It creates a unique ignored `.runtime/initialization-*` directory
+for the ledger, disposable keys, explicit CLI configuration, and diagnostics.
+An unrelated upgradeable genesis fixture has the same upgrade authority and is
+used only to test the ProgramData binding; it is never invoked as the application.
+Eight ticks per slot shorten local tests without changing finalized commitment.
+Agave 4.1.2's test-validator CLI hardcodes wildcard RPC/WebSocket/faucet listeners;
+`--bind-address 127.0.0.1` alone limits the other validator services. See its
+[faucet address](https://github.com/anza-xyz/agave/blob/v4.1.2/validator/src/bin/solana-test-validator.rs#L187)
+and [RPC configuration](https://github.com/anza-xyz/agave/blob/v4.1.2/test-validator/src/lib.rs).
+The namespace therefore isolates the entire runner, validator, tests, and CLI
+operations on loopback, with no external network interface or route. Existing
+Linux `unshare` and `ip` are required, with permission to create unprivileged
+namespaces; failure to create that isolation fails the check. No host interface,
+firewall, or default network configuration is changed. Ports are checked both
+on the host before isolation and inside the namespace before startup.
+Agave 4.1.2's default test feature set activates SIMD-0500, which rejects
+`SetAuthority(None)` for SBPF v0/v1/v2. To retain the pinned `--arch v0` artifact
+and exercise genuine authority removal, this disposable genesis alone deactivates
+`disable_sbpf_v0_v1_v2_deployment`
+(`B8JJXCy5amZyWG9r7EnUYLwzXSXTxG7GZ1qZ1qggo83g`). See the exact
+[Agave 4.1.2 loader check](https://github.com/anza-xyz/agave/blob/v4.1.2/programs/bpf_loader/src/lib.rs#L541)
+and [feature ID](https://github.com/anza-xyz/agave/blob/v4.1.2/feature-set/src/lib.rs#L1168).
+This fixture configuration does not change dependencies, global configuration,
+or the application's authorization model, and results apply to this local feature
+set rather than the validator's default feature set.
+Readiness is bounded to 60 seconds and tests to 900 seconds. Cleanup terminates
+only owned process groups and checks that their ports are released, including
+failure paths. No default Solana wallet/RPC settings are edited.
+
+`Config` is a singleton at `[b"config"]`, allocated once with Anchor `init` and
+the canonical bump: 572 bytes of data plus the 8-byte discriminator (580 bytes).
+It stores version 1; both 32-byte deployment domains; `crate::ID`; the complete
+32-byte big-endian EVM chain ID; six raw 20-byte EVM addresses (settlement, venue,
+cash token, YES token, operator, executor); the 32-byte market and fixed YES
+outcome 0; Solana operator/executor; validated cash/YES mints and executor cash
+ATA; the derived YES mint authority; exact legacy token, associated-token, and
+system programs; and the configuration/YES authority bumps. There are no
+setters, reset/close paths, accounting counters, or order records.
+
+`Signer` proves possession of a signing key, not deployment authorization.
+The executable program must have this exact ID and belong to the upgradeable
+loader. Its linked ProgramData must match the supplied typed loader-owned
+ProgramData, whose current upgrade authority must equal the initializer signer.
+Accepting any ProgramData with that signer would allow an unrelated deployment
+to authorize this program. The initializer pays the configuration rent.
+
+Real SPL setup transactions prepare legacy six-decimal mints without freeze
+authorities, zero initial YES supply under `[b"yes-authority", config_pubkey]`,
+and the existing executor cash ATA. Initialization validates all identities,
+canonical bindings, account state, delegate/close authority restrictions, and
+fixed executable programs. It neither creates the ATA nor transfers tokens,
+mints YES, or changes mint authorities. EVM inputs are trusted initialization
+values: Solana cannot inspect EVM storage or prove those contracts exist.
+Matching actual EVM deployment configuration remains a later integration check.
+
+Distinct Node subtests cover unauthorized first callers, a non-signing authority
+with a separate fee payer, substituted program/ProgramData accounts, invalid
+configuration, real SPL mint/account variations, and Token-2022 substitution.
+Rejected attempts are sent with preflight disabled, then require finalized
+failed transaction metadata, the expected on-chain error, no Config creation,
+and unchanged raw fixture token/mint state. A timeout or client construction
+failure fails the test. Successful initialization checks every stored field
+against an independently assembled byte layout, canonical PDAs/bumps, ownership,
+exact space, rent exemption, and unchanged token state. Both identical and
+changed reinitialization attempts must fail without changing Config or tokens.
+
+Finally, the real local `solana program set-upgrade-authority --final` operation
+removes the authority. The test reads back loader ProgramData with authority
+`None` and confirms Config remains readable and byte-for-byte unchanged.
+It does not treat an existing-Config rejection as evidence of the
+missing-authority branch. Per-run `tests.log`, `validator.log`,
+`remove-authority.log`, and `evidence.json` preserve public transaction signatures
+and results without printing private keys. Run the wrapper twice to verify
+independence from prior ledgers and fixture state.
+
+Verified on 2026-10-03: both fresh isolated runs passed all 48 named validator
+subtests (49 Node tests including the parent), with 45 finalized rejected
+transactions per run, no skipped cases, and all owned processes/ports cleaned
+up. The 13 Rust encoding tests, locked host checks, formatting, SBPF v0 build,
+exact IDL instruction assertion, TypeScript typecheck/import check, and
+`git diff --check` passed. Both lockfiles and dependency pins were unchanged.
+A separate occupied-host-port check failed startup as intended before fixture
+creation, then released its own listener. Builds still emit the existing LTO
+and bigint fallback warnings; Foundry also reported a nonfatal signature-cache
+write failure outside the repository under the filesystem sandbox.
