@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run actual initialization instructions on a disposable upgradeable validator."""
+"""Run initialization, optionally followed by orders, on one disposable validator."""
 
 import json
 import os
@@ -13,6 +13,11 @@ import time
 import urllib.error
 import urllib.request
 
+arguments = sys.argv[1:]
+if arguments not in ([], ["--orders"], ["--isolated-network"], ["--isolated-network", "--orders"]):
+    raise SystemExit("Unexpected runner arguments")
+orders_mode = "--orders" in arguments
+
 root = Path(os.environ["LAB_ROOT"])
 program_id = "7zLj7iNbNvV6m6nogUKgUuJKNw5wUWtfSvVTmcgqpfzK"
 # Agave 4.1.2 SIMD-0500 otherwise rejects SetAuthority(None) for the pinned
@@ -24,8 +29,8 @@ idl_types = root / "solana/target/types/settlement_lab.ts"
 if not binary.is_file() or binary.stat().st_size == 0 or not idl_path.is_file() or not idl_types.is_file():
     raise SystemExit("Build the SBF program and IDL before running this check")
 idl = json.loads(idl_path.read_text())
-if idl["address"] != program_id or [ix["name"] for ix in idl["instructions"]] != ["initialize"]:
-    raise SystemExit("Expected the unchanged program ID and exactly initialize in the IDL")
+if idl["address"] != program_id or sorted(ix["name"] for ix in idl["instructions"]) != ["create_order", "initialize"]:
+    raise SystemExit("Expected the unchanged program ID and exactly initialize and create_order in the IDL")
 
 ports = [18899, 18900, 18901, *range(19010, 19041)]
 http = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -90,15 +95,13 @@ signal.signal(signal.SIGINT, interrupted)
 # Agave's test-validator CLI hardcodes wildcard RPC/faucet listeners. An
 # unprivileged network namespace with only loopback makes all of them local.
 # Check host ports first as well, so occupied host ports still cause failure.
-if sys.argv[1:] == []:
+if "--isolated-network" not in arguments:
     check_ports()
     os.environ["INITIALIZATION_PARENT_NET"] = os.readlink("/proc/self/ns/net")
     os.execvp("unshare", [
         "unshare", "--user", "--map-root-user", "--net", "--",
-        "python3", str(Path(__file__).resolve()), "--isolated-network",
+        "python3", str(Path(__file__).resolve()), "--isolated-network", *(["--orders"] if orders_mode else []),
     ])
-if sys.argv[1:] != ["--isolated-network"]:
-    raise SystemExit("Unexpected runner arguments")
 if os.readlink("/proc/self/ns/net") == os.environ.get("INITIALIZATION_PARENT_NET"):
     raise SystemExit("The initialization runner requires its own network namespace")
 if [name for _, name in socket.if_nameindex()] != ["lo"]:
@@ -149,17 +152,22 @@ try:
         "INITIALIZATION_RUNTIME": str(runtime),
         "INITIALIZATION_UNRELATED_PROGRAM": unrelated,
     })
-    tests = start(["npm", "--prefix", "harness", "run", "test:initialization"], "tests", env)
-    deadline = time.monotonic() + 900
-    while tests.poll() is None and time.monotonic() < deadline:
-        if validator.poll() is not None:
-            raise RuntimeError(f"Validator exited during tests: {validator.returncode}")
-        time.sleep(0.5)
-    if tests.poll() is None:
-        raise RuntimeError("Initialization tests exceeded the 900-second deadline")
-    print((runtime / "tests.log").read_text(), flush=True)
-    if tests.returncode != 0:
-        raise RuntimeError(f"Initialization tests failed: {tests.returncode}")
+    suites = [("initialization", "test:initialization")]
+    if orders_mode:
+        suites.append(("orders", "test:orders"))
+    for name, npm_script in suites:
+        tests = start(["npm", "--prefix", "harness", "run", npm_script], "tests" if name == "initialization" else name, env)
+        deadline = time.monotonic() + 900
+        while tests.poll() is None and time.monotonic() < deadline:
+            if validator.poll() is not None:
+                raise RuntimeError(f"Validator exited during {name}: {validator.returncode}")
+            time.sleep(0.5)
+        if tests.poll() is None:
+            raise RuntimeError(f"{name} tests exceeded the 900-second deadline")
+        print((runtime / ("tests.log" if name == "initialization" else f"{name}.log")).read_text(), flush=True)
+        if tests.returncode != 0:
+            raise RuntimeError(f"{name} tests failed: {tests.returncode}")
+
 finally:
     # Each process has its own session; terminate its descendants as well as its leader.
     for process in reversed(processes):

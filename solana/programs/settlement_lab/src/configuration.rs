@@ -255,4 +255,38 @@ pub enum InitializationError {
     ReimbursementDelegate,
     #[msg("Reimbursement account must have no close authority")]
     ReimbursementCloseAuthority,
+
+    // Creation codes start at 7000; existing initialization codes remain unchanged.
+    #[msg("Configuration version, identity, or stored bindings are invalid")]
+    InvalidConfig = 1000,
+    #[msg("Account does not match its permanent stored relationship")]
+    InvalidBinding,
+    #[msg("Operator and executor cannot create user orders")]
+    ReservedUser,
+    #[msg("Protocol accounts must not alias")]
+    UnsafeAlias,
+    #[msg("Configured mints must be initialized, six-decimal, and have safe authorities")]
+    InvalidMint,
+    #[msg("User token account has the wrong mint or original owner")]
+    InvalidUserToken,
+    #[msg("User token account is not the canonical legacy ATA")]
+    NoncanonicalAta,
+    #[msg("User token account must be initialized and unfrozen")]
+    UnsafeTokenState,
+    #[msg("Escrow mint, authority, state, delegate, or close authority is unsafe")]
+    UnsafeEscrow,
+    #[msg("Cash amount must be positive")]
+    ZeroCash,
+    #[msg("Cash amount exceeds the exact-output uint64 bound")]
+    CashTooLarge,
+    #[msg("Minimum shares must be positive")]
+    ZeroMinimum,
+    #[msg("New order nonce must equal the permanent next nonce")]
+    NonceMismatch,
+    #[msg("Permanent user nonce is exhausted")]
+    NonceExhausted,
+    #[msg("Existing order immutable terms or canonical hashes conflict")]
+    TermsConflict,
+    #[msg("Checked transfer did not produce the exact expected balances")]
+    UnexpectedBalance,
 }

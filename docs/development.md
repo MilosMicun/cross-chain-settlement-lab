@@ -4,9 +4,11 @@ Compilation, local RPC health, canonical protocol encoding, EVM settlement,
 and one-time Anchor initialization have been verified within their respective
 test scopes. The EVM Settlement implements atomic purchases, permanent
 cancellation, and terminal replay handling. The Anchor program currently
-exposes only initialize, tested against the real SBF program on an isolated
-local validator. Solana order creation, escrow, receipt settlement/refunds,
-and cross-chain transport/integration are not yet implemented.
+exposes `initialize` and `create_order`. Order creation atomically deposits
+legacy SPL cash into the canonical escrow and persists a permanent identity;
+exact creation replay preserves accounts without another deposit. Source
+cancellation, receipt acceptance, reimbursement, refunds, YES issuance, and
+cross-chain transport/integration are not implemented.
 
 ## Pinned environment
 
@@ -66,6 +68,7 @@ bash scripts/check-tools.sh
 bash scripts/check-builds.sh
 bash scripts/check-rpc.sh
 bash scripts/check-solana-initialization.sh
+bash scripts/check-solana-orders.sh
 ```
 
 The installer checks existing executables before installing missing components;
@@ -101,8 +104,8 @@ processes. It does not alter the default Solana wallet/RPC configuration.
 - Forge compilation and formatting checks passed for the existing EVM contracts
   using Solidity 0.8.30.
 - `cargo check --workspace --locked` and `cargo fmt --all -- --check` passed.
-- Anchor produced the SBF binary and JSON/TypeScript IDL with exactly one
-  business instruction, `initialize`, at the unchanged public program ID.
+- Anchor produced the SBF binary and JSON/TypeScript IDL with exactly
+  `initialize` and `create_order` at the unchanged public program ID.
 - TypeScript's full declaration check and the import check passed. Dependencies
   are installed without lifecycle scripts; the optional bigint-buffer native
   addon is absent and emits a warning before using its working JavaScript fallback.
@@ -183,7 +186,8 @@ cash token, YES token, operator, executor); the 32-byte market and fixed YES
 outcome 0; Solana operator/executor; validated cash/YES mints and executor cash
 ATA; the derived YES mint authority; exact legacy token, associated-token, and
 system programs; and the configuration/YES authority bumps. There are no
-setters, reset/close paths, accounting counters, or order records.
+configuration setters or reset/close paths. Config contains no aggregate
+accounting counters or order records; creation stores those identities separately.
 
 `Signer` proves possession of a signing key, not deployment authorization.
 The executable program must have this exact ID and belong to the upgradeable
@@ -231,3 +235,112 @@ A separate occupied-host-port check failed startup as intended before fixture
 creation, then released its own listener. Builds still emit the existing LTO
 and bigint fallback warnings; Foundry also reported a nonfatal signature-cache
 write failure outside the repository under the filesystem sandbox.
+
+## Atomic order creation check (Task 4C2)
+
+```bash
+source scripts/env.sh
+(cd solana && cargo check --workspace --locked)
+(cd solana && cargo fmt --all -- --check)
+(cd solana && cargo test --workspace --locked)
+(cd solana && anchor build --ignore-keys --tools-version v1.54 --arch v0)
+npm --prefix harness run typecheck
+npm --prefix harness run check:imports
+bash scripts/check-solana-orders.sh
+bash scripts/check-builds.sh
+git diff --check
+```
+
+The orders wrapper selects the existing validator runner's explicit `--orders`
+mode. It first runs the unchanged initialization suite, including genuine loader
+upgrade-authority removal, then runs `test:orders` on that same validator.
+`check-solana-initialization.sh` remains initialization-only. Both IDL guards
+require exactly `initialize` and `create_order`, regardless of IDL sorting.
+Namespace isolation, the documented local SIMD-0500 genesis setting, readiness,
+a 900-second deadline per suite, process-group cleanup, and TCP/UDP port-release
+checks are shared. Socket/namespace access may require execution outside the
+filesystem sandbox; no application/network authorization changes are involved.
+
+`create_order` accepts only uint64 nonce, cash amount, and minimum shares. It
+requires the original user signer, distinct from the fixed Solana roles, and
+reads all deployment/market identity from the canonical immutable Config. It
+uses the SPEC big-endian nonce PDA seeds and the existing Rust canonical hash
+and checked amount/nonce helpers. Positive unattainable minima are allowed.
+ProgramData and deployment authority are absent from its account list.
+
+UserNonce remains 81 bytes including its discriminator. Order allocates its
+maximum 335 bytes, including capacity for a future 41-byte accepted receipt;
+neither layout changes. Escrow is a 165-byte legacy SPL token account whose
+authority is the Order PDA, without delegate or close authority. Mint checks
+retain six decimals and safe authorities but do not restrict current YES supply.
+Canonical user ATAs must have the configured mint, original user owner, and
+initialized/unfrozen state. Account types/owners, canonical seeds/bumps, stored
+relationships, executable program identities, and unsafe aliases are checked.
+`Box<Account<...>>` keeps Anchor account validation within SBPF v0 stack limits.
+
+Only `init-if-needed` is added to the existing pinned anchor-lang dependency.
+Fresh zero-filled identity records are identified by their default config field;
+all persisted identities contain the real nonzero Config key. Existing records
+must match their stored user/config/bump and order relationships. There are no
+close, reset, reassignment, or record-clearing paths, so existing identities
+cannot be converted back into fresh records. The escrow uses generic Anchor
+allocation with the legacy SPL owner, then explicit legacy `InitializeAccount3`
+for a new zero-filled escrow. This avoids Anchor 1.2.0's token-init macro requiring
+Token-2022 runtime features. An existing order requires an already initialized,
+valid escrow; missing escrow replay fails atomically rather than recreating a
+deposit. Successful exact replay performs neither system nor token CPI.
+
+After authorization/bindings, existing creation verifies full terms and canonical
+hashes and returns without changing lifecycle, cancellation flag, receipt,
+nonce, or balances. It does not require Pending, the original escrow balance,
+or cash for another deposit. Changed valid terms return `TermsConflict`. New
+creation checks the next nonce, transfers exactly the deposit via
+`transfer_checked`, reloads and verifies both token balance deltas, persists all
+Order fields in Pending, and advances the counter once. Account rent, allocation,
+escrow initialization, transfer, order persistence, and counter advancement are
+one atomic transaction. Only successful new creation emits `OrderCreated`.
+
+Anchor's IDL generator permits one error enum, so `configuration.rs` also gains
+the creation variants in its existing enum, starting explicitly at code 7000.
+Initialization's existing codes and behavior remain unchanged. This is the only
+additional file beyond the task's expected edit list; Config layout is unchanged.
+
+The creation suite uses actual signed transactions, legacy SPL fixtures, and
+independently concatenated Node crypto SHA-256 preimages with explicit uint64
+big-endian encoding. Amounts and nonces use bigint/Anchor BN throughout. It
+checks every first-order byte, maximum allocation, ownership, rent, balances,
+counter, hashes, and event fields; second/other-user orders; stale/underfunded
+replay; donated escrow replay; conflicting terms; amount/nonce bounds; missing
+signature; substituted account/PDA/mint/ATA/program identities; Token-2022;
+and failed transfer rollback followed by same-identity replenishment/retry.
+Each rejection requires finalized executed failure with the expected log error
+and unchanged tracked raw data, token balances/supply, account existence, and
+user rent. A separate faucet pays transaction fees. Both a fresh UserNonce and
+an existing counter are checked through failed transfers. Public transaction
+signatures and outcomes remain in ignored `orders-evidence.json` and `orders.log`
+under the runner's unique `.runtime/initialization-*` directory.
+
+No production test hooks or validator storage mutations are used. Lifecycle
+replay is unrestricted in code; terminal-state on-chain replay awaits later
+business instructions. Arithmetic exhaustion remains covered by existing host
+tests. Cumulative source accounting is still required in a subsequent bounded
+task before source finalization. These checks establish local order creation and
+replay only, without source cancellation, settlement/refunds, YES issuance,
+transport, EVM integration, or a cross-chain demo.
+
+
+Verified on 2026-10-04: the combined fresh-validator run passed 48 initialization
+subtests (49 Node tests including the parent) and 45 creation subtests (46 Node
+tests including the parent), without failures or skips. Creation evidence records
+six successful new orders, six exact replays, and 34 finalized rejected
+transactions. Initialization records 45 finalized rejections. Both fresh-counter
+and existing-counter insufficient-cash attempts rolled back fully; replenishment
+then succeeded once and replay preserved state. Owned processes stopped and all
+reserved TCP/UDP ports were released. The 28 existing Rust host tests, locked
+check, formatting, pinned SBF/IDL build, TypeScript checks, aggregate build script,
+and tracked/new-file whitespace checks passed. Pins, both lockfiles, Config and
+order layouts, canonical encoding, and the program ID remained unchanged.
+Initial compile issues (token-init macro features, account-validation stack size,
+and multiple error enums in IDL) and TypeScript test callback return types were
+resolved. Remaining warnings are the existing LTO/bigint fallback warnings and a
+nonfatal Foundry signature-cache write failure under the filesystem sandbox.
