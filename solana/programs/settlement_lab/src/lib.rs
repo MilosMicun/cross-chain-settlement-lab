@@ -2,6 +2,7 @@ use anchor_lang::prelude::*;
 
 pub mod accounting;
 pub mod configuration;
+pub mod filled_receipt;
 pub mod order_cancellation;
 pub mod order_creation;
 pub mod order_state;
