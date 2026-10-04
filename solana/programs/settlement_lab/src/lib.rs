@@ -2,6 +2,7 @@ use anchor_lang::prelude::*;
 
 pub mod accounting;
 pub mod cancelled_receipt;
+pub mod cancelled_settlement;
 pub mod configuration;
 pub mod filled_receipt;
 pub mod filled_settlement;
@@ -9,6 +10,7 @@ pub mod order_cancellation;
 pub mod order_creation;
 pub mod order_state;
 pub mod protocol_encoding;
+use cancelled_settlement::*;
 use configuration::*;
 use filled_settlement::*;
 use order_cancellation::*;
@@ -29,6 +31,12 @@ pub mod settlement_lab {
     }
     pub fn accept_filled(ctx: Context<AcceptFilled>, args: AcceptFilledArgs) -> Result<()> {
         filled_settlement::accept_filled(ctx, args)
+    }
+    pub fn accept_cancelled(
+        ctx: Context<AcceptCancelled>,
+        args: AcceptCancelledArgs,
+    ) -> Result<()> {
+        cancelled_settlement::accept_cancelled(ctx, args)
     }
     pub fn request_cancel(
         ctx: Context<RequestCancel>,

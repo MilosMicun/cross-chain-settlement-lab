@@ -347,4 +347,34 @@ pub enum InitializationError {
     FilledInconsistentRecord,
     #[msg("Filled token operations did not produce exact expected balance and supply deltas")]
     FilledUnexpectedBalance,
+
+    // Refund acceptance codes start at 11000; all earlier codes remain unchanged.
+    #[msg("Refund configuration identity, domains, or pinned bindings are invalid")]
+    RefundInvalidConfig = 5000,
+    #[msg("Refund account does not match its canonical permanent binding")]
+    RefundInvalidBinding,
+    #[msg("Refund acceptance requires the configured operator signer")]
+    RefundUnauthorizedOperator,
+    #[msg("Operator and executor cannot be original refund users")]
+    RefundReservedUser,
+    #[msg("Refund protocol accounts must not alias")]
+    RefundUnsafeAlias,
+    #[msg("Refund cash mint must be initialized, six-decimal, and without freeze authority")]
+    RefundInvalidMint,
+    #[msg("Refund token account mint, authority, state, or escrow restrictions are unsafe")]
+    RefundUnsafeToken,
+    #[msg("Refund incoming immutable terms conflict with the stored order")]
+    RefundTermsConflict,
+    #[msg("Cancelled receipt terms hash, terminal, or zero quantity is invalid")]
+    RefundInvalidReceipt,
+    #[msg("Refund requires a prior user cancellation request")]
+    RefundCancellationNotRequested,
+    #[msg("Refund stored terms, lifecycle, or retained terminal receipt is inconsistent")]
+    RefundInconsistentRecord,
+    #[msg("Cancelled receipt conflicts with the permanent terminal outcome")]
+    RefundTerminalConflict,
+    #[msg("Refund token transfer did not produce exact expected balance deltas")]
+    RefundUnexpectedBalance,
+    #[msg("Refund stored order or accounting cash amount is invalid")]
+    RefundInvalidAmount,
 }
