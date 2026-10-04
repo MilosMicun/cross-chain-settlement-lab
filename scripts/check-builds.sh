@@ -27,10 +27,10 @@ fi
 import json
 from pathlib import Path
 idl = json.loads(Path("target/idl/settlement_lab.json").read_text())
-assert sorted(instruction["name"] for instruction in idl["instructions"]) == ["create_order", "initialize"]
+assert sorted(instruction["name"] for instruction in idl["instructions"]) == ["create_order", "initialize", "request_cancel"]
 assert Path("target/deploy/settlement_lab.so").stat().st_size > 0
 assert Path("target/types/settlement_lab.ts").is_file()
-print("PASS: SBF binary, JSON IDL, and TypeScript IDL; exactly initialize and create_order")
+print("PASS: SBF binary, JSON IDL, and TypeScript IDL; exactly initialize, create_order, and request_cancel")
 PY
 ) 2>&1 | tee "$LAB_ROOT/.local/logs/anchor-build.log"
 

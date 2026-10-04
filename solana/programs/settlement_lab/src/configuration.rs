@@ -289,4 +289,18 @@ pub enum InitializationError {
     TermsConflict,
     #[msg("Checked transfer did not produce the exact expected balances")]
     UnexpectedBalance,
+
+    // Cancellation codes start at 8000; all earlier codes remain unchanged.
+    #[msg("Cancellation configuration version, identity, or bindings are invalid")]
+    CancellationInvalidConfig = 2000,
+    #[msg("Cancellation account or stored address does not match its canonical binding")]
+    CancellationInvalidBinding,
+    #[msg("Stored cancellation order amounts are invalid")]
+    CancellationInvalidAmounts,
+    #[msg("Cancellation immutable terms or expected hash conflict")]
+    CancellationTermsConflict,
+    #[msg("Order state, cancellation flag, or accepted receipt is inconsistent")]
+    CancellationInconsistentRecord,
+    #[msg("A terminal order cannot accept a new cancellation request")]
+    CancellationTerminalWithoutRequest,
 }

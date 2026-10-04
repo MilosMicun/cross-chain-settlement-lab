@@ -4,11 +4,11 @@ Compilation, local RPC health, canonical protocol encoding, EVM settlement,
 and one-time Anchor initialization have been verified within their respective
 test scopes. The EVM Settlement implements atomic purchases, permanent
 cancellation, and terminal replay handling. The Anchor program currently
-exposes `initialize` and `create_order`. Order creation atomically deposits
-legacy SPL cash into the canonical escrow and persists a permanent identity;
-exact creation replay preserves accounts without another deposit. Source
-cancellation, receipt acceptance, reimbursement, refunds, YES issuance, and
-cross-chain transport/integration are not implemented.
+exposes `initialize`, `create_order`, and `request_cancel`. Order creation
+atomically deposits legacy SPL cash into the canonical escrow and persists a permanent identity;
+exact creation replay preserves accounts without another deposit. User-signed
+cancellation records intent while keeping cash locked; exact cancellation replay has no additional effect. Receipt acceptance, reimbursement,
+refunds, YES issuance, and cross-chain transport/integration are not implemented.
 
 ## Pinned environment
 
@@ -69,6 +69,7 @@ bash scripts/check-builds.sh
 bash scripts/check-rpc.sh
 bash scripts/check-solana-initialization.sh
 bash scripts/check-solana-orders.sh
+bash scripts/check-solana-cancellation.sh
 ```
 
 The installer checks existing executables before installing missing components;
@@ -105,7 +106,8 @@ processes. It does not alter the default Solana wallet/RPC configuration.
   using Solidity 0.8.30.
 - `cargo check --workspace --locked` and `cargo fmt --all -- --check` passed.
 - Anchor produced the SBF binary and JSON/TypeScript IDL with exactly
-  `initialize` and `create_order` at the unchanged public program ID.
+  `initialize`, `create_order`, and `request_cancel` at the unchanged public
+  program ID.
 - TypeScript's full declaration check and the import check passed. Dependencies
   are installed without lifecycle scripts; the optional bigint-buffer native
   addon is absent and emits a warning before using its working JavaScript fallback.
@@ -236,7 +238,7 @@ creation, then released its own listener. Builds still emit the existing LTO
 and bigint fallback warnings; Foundry also reported a nonfatal signature-cache
 write failure outside the repository under the filesystem sandbox.
 
-## Atomic order creation check (Task 4C2)
+## Atomic order creation check
 
 ```bash
 source scripts/env.sh
@@ -255,7 +257,8 @@ The orders wrapper selects the existing validator runner's explicit `--orders`
 mode. It first runs the unchanged initialization suite, including genuine loader
 upgrade-authority removal, then runs `test:orders` on that same validator.
 `check-solana-initialization.sh` remains initialization-only. Both IDL guards
-require exactly `initialize` and `create_order`, regardless of IDL sorting.
+require exactly `initialize`, `create_order`, and `request_cancel`, regardless of
+IDL sorting.
 Namespace isolation, the documented local SIMD-0500 genesis setting, readiness,
 a 900-second deadline per suite, process-group cleanup, and TCP/UDP port-release
 checks are shared. Socket/namespace access may require execution outside the
@@ -344,3 +347,91 @@ Initial compile issues (token-init macro features, account-validation stack size
 and multiple error enums in IDL) and TypeScript test callback return types were
 resolved. Remaining warnings are the existing LTO/bigint fallback warnings and a
 nonfatal Foundry signature-cache write failure under the filesystem sandbox.
+
+## User cancellation request check
+
+```bash
+source scripts/env.sh
+(cd solana && cargo check --workspace --locked)
+(cd solana && cargo fmt --all -- --check)
+(cd solana && cargo test --workspace --locked)
+(cd solana && anchor build --ignore-keys --tools-version v1.54 --arch v0)
+npm --prefix harness run typecheck
+npm --prefix harness run check:imports
+bash scripts/check-solana-cancellation.sh
+bash scripts/check-builds.sh
+git diff --check
+```
+
+The cancellation wrapper selects explicit `--cancellation` mode: initialization,
+creation, then cancellation run sequentially on one fresh isolated validator.
+Initialization-only and orders-only wrappers retain their existing suite choices.
+The same genesis feature setting, namespace isolation, readiness checks, suite
+deadlines, ignored evidence directory, and owned process/port cleanup apply.
+
+`request_cancel(nonce, expected_terms_hash)` requires only the original user
+signer, read-only canonical Config, and writable existing canonical Order. Anchor
+checks ownership/discriminators and canonical seeds; the handler validates
+configuration version/program/domain bindings, stored order relationships,
+market/outcome, amount bounds, canonical ID/hash, expected hash, stored user ATA
+addresses, and escrow address/bump on every request including replay. ATA and
+escrow derivation checks require no live token accounts. No UserNonce, token,
+system, deployment-authority, or operator accounts are required.
+
+A consistent Pending record changes only state and cancellation flag and emits
+one `CancellationRequested` event containing Config, user, Order, nonce, order ID,
+and terms hash. A consistent CancelRequested replay has no event or mutation.
+Terminal replay requires a prior cancellation and a consistent retained receipt;
+new terminal requests and inconsistent state/flag/receipt combinations fail
+without mutation. The small Rust transition helper validates terminal receipt
+tag, exact quantity/minimum, and hash without accepting or writing any receipt.
+Refunded without a prior request is an inconsistent record. Shared errors reserve
+8000 onward; earlier initialization and creation codes remain unchanged.
+
+Cancellation never calls token/system programs, allocates rent, advances nonce,
+releases funds, or establishes refund eligibility by itself. It performs no EVM
+call or receipt acceptance. No timeout payout, administrator override, or reset
+path exists. Config/UserNonce/Order layouts, canonical encoding, program identity,
+dependency pins, lockfiles, initialization, and creation logic are preserved.
+
+The focused validator suite creates fresh signed users and real orders after
+genuine upgrade-authority removal. Raw account snapshots include Config, orders,
+counters, escrow, user/executor token accounts, mint supplies, rent, and user SOL;
+only the two lifecycle bytes may change on a first request. Transaction fees are
+checked separately against a fresh fee payer funded with 10 SOL (within the
+JavaScript safe integer range); the large genesis faucet is excluded from fee
+arithmetic. Replays and finalized executed
+failures preserve every tracked byte and balance. Successful cancellation and
+creation replay logs and inner-instruction records must show no CPI. The suite
+also covers advanced nonces, independent users, zero user cash, closed user ATAs,
+wrong signers/accounts/nonces/hashes, nonexistent orders, escrow donations,
+creation replay after cancellation, and subsequent order creation. Public
+signatures and outcomes remain in ignored `cancellation-evidence.json` alongside
+`cancellation.log`; credentials remain local and are never printed.
+
+Terminal cancellation replay is verified only with realistic host receipt
+fixtures until real receipt-processing instructions exist. No validator storage
+injection or production test hooks are used. Cumulative accounting remains
+required before source finalization in a separate bounded task.
+
+
+Verified on 2026-10-04: the combined fresh-validator run passed 48 initialization,
+45 creation, and 27 cancellation subtests (49, 46, and 28 Node tests including
+their parents), without failures or skips. Cancellation evidence records six
+real creations, four first requests, six cancellation/creation replays, and 16
+finalized executed rejections. Every first request changed only Order state/flag;
+replays preserved complete snapshots with no token/system CPI, payment, or nonce
+increment. Donations remained locked, zero-cash requests succeeded, and closed
+user ATAs were not recreated. All 34 Rust host tests (including six cancellation
+tests), locked check, formatting, pinned SBF/IDL build, TypeScript checks,
+aggregate build, and whitespace checks passed. Owned processes stopped and all
+reserved TCP/UDP ports were released. Runtime evidence remains under ignored
+`.runtime/initialization-iexqluwf/`.
+
+The first cancellation run exposed rounding in a test's fee comparison against
+the oversized genesis faucet. A separate fee payer within the JavaScript safe
+integer range corrected the test; the complete three-suite run then passed on a
+fresh validator. No program changes were needed for that test correction. The
+existing LTO, bigint JavaScript fallback, and nonfatal sandboxed Foundry
+signature-cache warnings remain. Terminal replay coverage remains host-only;
+there is still no receipt processing, source payout, or cross-chain demo.
