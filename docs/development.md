@@ -264,8 +264,8 @@ The orders wrapper selects the existing validator runner's explicit `--orders`
 mode. It first runs the initialization suite, including genuine loader
 upgrade-authority removal, then runs `test:orders` on that same validator.
 `check-solana-initialization.sh` remains initialization-only. Both IDL guards
-require exactly `initialize`, `create_order`, and `request_cancel`, regardless of
-IDL sorting.
+require exactly `initialize`, `create_order`, `request_cancel`, and
+`accept_filled`, regardless of IDL sorting.
 Namespace isolation, the documented local SIMD-0500 genesis setting, readiness,
 a 900-second deadline per suite, process-group cleanup, and TCP/UDP port-release
 checks are shared. Socket/namespace access may require execution outside the
@@ -507,3 +507,135 @@ namespace access outside the restricted filesystem sandbox. Existing LTO,
 bigint JavaScript fallback, and nonfatal Foundry signature-cache write warnings
 remain; arithmetic overflow and terminal cancellation replay coverage remain
 host-only.
+
+
+## Atomic Filled settlement check
+
+```bash
+source scripts/env.sh
+(cd solana && cargo check --workspace --locked)
+(cd solana && cargo fmt --all -- --check)
+(cd solana && cargo test --workspace --locked)
+(cd solana && anchor build --ignore-keys --tools-version v1.54 --arch v0)
+npm --prefix harness run typecheck
+npm --prefix harness run check:imports
+bash scripts/check-solana-filled.sh
+bash scripts/check-builds.sh
+git diff --check
+```
+
+The Filled wrapper selects explicit `--filled` mode: initialization, creation,
+cancellation, then Filled acceptance run on one fresh validator. Existing modes
+retain their suite choices. Both IDL guards require exactly `initialize`,
+`create_order`, `request_cancel`, and `accept_filled`. The same loopback namespace,
+local SIMD-0500 genesis limitation, owned process cleanup, and port checks apply.
+The initialization fixture saves its generated operator credential with mode
+0600 under the ignored per-run `.runtime` directory for the later signed suite;
+the credential is never printed or included in public transaction evidence.
+
+`accept_filled` accepts typed Borsh argument adapters containing full immutable
+terms and receipt fields. These explicitly convert to the existing canonical
+encoding types; SHA-256 still hashes fixed-width big-endian protocol preimages,
+including the complete 32-byte EVM chain ID. No account layout, prior instruction
+interface, program ID, dependency pin, lockfile, or encoding vector changes.
+The existing error enum appends codes 10000–10010 while retaining earlier codes.
+
+The configured operator signs; the original user is a readonly identity without
+a signature requirement. Existing typed program/SPL accounts authenticate owners
+and discriminators. Canonical PDAs/bumps, Config domains/program/roles and pinned
+programs, Accounting, permanent UserNonce, Order, stored and independently derived
+user YES ATA, escrow, executor cash ATA, and mint authority must all match.
+The stored user cash ATA is also independently derived, without requiring a live
+cash account. Mints are initialized, distinct, six-decimal, and have no freeze
+authority; current YES supply may be nonzero. Escrow and reimbursement accounts
+must have safe initialized state with no delegate or close authority. The YES
+authority PDA authenticates signing seeds without a program-owned data account.
+No allocation, account closure, authority rotation, or alternate payout exists.
+
+After account checks, `validate_filled_receipt` decides Apply or Replay. An exact
+Settled replay returns before balance/capacity checks, counters, CPIs, events, or
+mutation, even with depleted escrow or owner-burned YES. A new fill calls
+`Accounting::record_fill`, then legacy `MintToChecked` signed by YES authority,
+then `TransferChecked` signed by Order. The pinned legacy Anchor SPL module lacks
+a checked-mint wrapper, so the handler constructs that instruction through its
+existing SPL re-export and invokes it directly. Relevant accounts/mint reload;
+exact supply and balance deltas must match before persisting Settled and the
+accepted receipt and emitting one `FilledAccepted`. Cancellation history stays
+unchanged. Escrow donations remain after reimbursing only the original cash.
+All operations share one Solana transaction; errors propagate and roll back.
+
+The focused suite uses a separate fee payer, actual SBF execution, finalized
+metadata, independent Node crypto hashes, bigint/BN amounts, and complete raw
+account snapshots. Actual inner instruction bytes prove checked mint/transfer
+amounts, decimals, CPI order, and canonical accounts independently of optional
+SPL instruction log labels. It checks Pending and CancelRequested settlement, receipt and
+event fields, exact payout/issuance, counters and unchanged nonce/history,
+replay without CPI/events, user burns, donations, terminal creation/cancellation
+replays, missing and genuinely signed wrong operator, representative account and
+input substitutions, and minimum-output rejection. Public evidence is written
+only to ignored `filled-evidence.json`; user-authorized burns are tracked
+separately from cumulative issuance.
+
+The last scenario burns earlier fixture YES legitimately, fills the largest
+valid order to supply `u64::MAX - 1`, and attempts a two-unit fill. The actual
+legacy mint CPI must report overflow before reimbursement; the complete failed
+transaction must preserve Order/receipt/history, Accounting, escrow, executor,
+user balance, and mint supply. A genuine owner burn frees two units; the same
+order then settles once, followed by exact replay. Cumulative u128 issuance can
+exceed u64 while current mint supply remains valid. No program-owned storage
+mutation or production test hook is used.
+
+Receipts are authorized operator attestations. This instruction does not prove
+an EVM purchase or verify EVM finality. The future off-chain observer must check
+terminal EVM storage, the successful matching receipt, and the specified policy
+of two additional mined blocks, using finalized Solana observations. Hashes bind
+content; they are not execution proofs. A dishonest or compromised operator can
+fabricate fills and break backing; an unavailable operator can delay settlement.
+Cancelled acceptance/refunds, transport, cross-chain integration, and verification
+of failure in the second CPI after a successful mint remain pending. A failed
+first mint CPI does not establish that second-CPI rollback scenario. This remains
+independent educational work with an explicitly trusted operator.
+
+Verified on 2026-10-04: the fresh combined run passed 49 initialization,
+53 creation, 27 cancellation, and 34 Filled subtests (50, 54, 28, and 35 Node
+tests including parents), with no failures, skips, or cancellations. The prior
+suites recorded 46, 42, and 16 finalized rejections. Filled evidence recorded
+52 finalized transactions, including seven real creations, five successful
+fills, eight protocol replays, two cancellation requests, three legitimate
+user burns, and 27 executed rejections. Every successful fill had exactly the
+checked mint and reimbursement CPIs and one event; replay had neither CPI nor
+event and preserved every tracked account byte.
+
+The actual supply-boundary rejection returned SPL custom error 14 (overflow)
+from the sole attempted MintToChecked CPI, before reimbursement. Complete raw
+snapshots, including the prior cancellation flag, remained unchanged. Burning
+two units then allowed the same receipt to settle once and replay without
+effect. Final cumulative issuance was 18,446,744,073,769,551,616 units,
+owner burns totaled 60,000,002, and current supply was
+18,446,744,073,709,551,614. Deposits were 9,223,372,037,004,775,810 and
+reimbursements 9,223,372,036,884,775,808 across 19 permanent orders; refunds
+remained zero. All outstanding escrows and independently tracked donations
+reconciled. Public signatures, finalized slots, results, and burn records remain
+in ignored `.runtime/initialization-_2ufjtjh/filled-evidence.json`. Owned processes
+stopped and all reserved TCP/UDP ports were released.
+
+All 90 existing Rust host tests, locked workspace check, formatting check,
+pinned SBF/IDL build, TypeScript typecheck/import check, aggregate build, and
+tracked/new-file whitespace checks passed. A separately generated IDL from the
+starting source snapshot confirmed that every previous instruction, account,
+type, event, error code/message, and metadata entry is identical. Additions are
+limited to Filled acceptance, its four argument types, event, and reserved
+errors. Account layouts, program identity, dependency pins, lockfiles, and
+canonical vectors remain unchanged.
+
+The first Filled run exposed a test assumption about optional SPL instruction
+log labels. Direct verification of actual CPI bytes/accounts replaced that
+assumption while retaining all state and economic assertions; the complete run
+then passed on a fresh validator. The original-IDL compatibility build initially
+shared host artifacts with the current build; cleaning the local package
+artifacts and rebuilding restored the current IDL, and both compatibility and
+aggregate checks passed again. Remaining nonfatal warnings are the existing
+LTO limitation, bigint JavaScript fallback, and sandboxed Foundry signature-cache
+write failure. Socket/namespace access required running the isolated validator
+outside the filesystem sandbox. EVM execution/finality, Cancelled/refund,
+transport/cross-chain behavior, and second-CPI failure remain unverified here.

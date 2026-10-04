@@ -323,4 +323,28 @@ pub enum InitializationError {
     AccountingArithmeticOverflow,
     #[msg("Recorded source payouts exceed accepted deposits")]
     AccountingPayoutsExceedDeposits,
+
+    // Filled acceptance codes start at 10000; all earlier codes remain unchanged.
+    #[msg("Filled configuration identity, domains, or pinned bindings are invalid")]
+    FilledInvalidConfig = 4000,
+    #[msg("Filled account does not match its canonical permanent binding")]
+    FilledInvalidBinding,
+    #[msg("Filled acceptance requires the configured operator signer")]
+    FilledUnauthorizedOperator,
+    #[msg("Operator and executor cannot be original order users")]
+    FilledReservedUser,
+    #[msg("Filled protocol accounts must not alias")]
+    FilledUnsafeAlias,
+    #[msg("Filled mints must be initialized, six-decimal, and have safe authorities")]
+    FilledInvalidMint,
+    #[msg("Filled token account mint, authority, state, or payout restrictions are unsafe")]
+    FilledUnsafeToken,
+    #[msg("Filled immutable terms or canonical stored hashes conflict")]
+    FilledTermsConflict,
+    #[msg("Filled receipt terms hash, terminal, quantity, or minimum is invalid")]
+    FilledInvalidReceipt,
+    #[msg("Filled lifecycle or retained terminal receipt is inconsistent or conflicting")]
+    FilledInconsistentRecord,
+    #[msg("Filled token operations did not produce exact expected balance and supply deltas")]
+    FilledUnexpectedBalance,
 }

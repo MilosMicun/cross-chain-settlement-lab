@@ -13,7 +13,8 @@
     "check:imports": "node src/check-imports.ts",
     "test:initialization": "node --test --test-concurrency=1 src/tests/initialization.test.ts",
     "test:orders": "node --test --test-concurrency=1 src/tests/order-creation.test.ts",
-    "test:cancellation": "node --test --test-concurrency=1 src/tests/order-cancellation.test.ts"
+    "test:cancellation": "node --test --test-concurrency=1 src/tests/order-cancellation.test.ts",
+    "test:filled": "node --test --test-concurrency=1 src/tests/filled-settlement.test.ts"
   },
   "dependencies": {
     "@anchor-lang/core": "1.2.0",

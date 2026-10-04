@@ -40,6 +40,8 @@ const [accounting, accountingBump] = PublicKey.findProgramAddressSync([Buffer.fr
 const [yesAuthority, yesBump] = PublicKey.findProgramAddressSync([Buffer.from("yes-authority"), config.toBuffer()], programId);
 const executor = Keypair.generate();
 const operator = Keypair.generate();
+// Share only this local fixture credential with the later operator-signed suite.
+writeFileSync(join(runtime, "operator-fixture.json"), JSON.stringify([...operator.secretKey]) + "\n", { mode: 0o600 });
 const wrongSigner = Keypair.generate();
 const tracked: PublicKey[] = [];
 let latestSlot = 0;

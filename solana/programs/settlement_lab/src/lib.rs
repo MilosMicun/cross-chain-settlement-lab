@@ -3,11 +3,13 @@ use anchor_lang::prelude::*;
 pub mod accounting;
 pub mod configuration;
 pub mod filled_receipt;
+pub mod filled_settlement;
 pub mod order_cancellation;
 pub mod order_creation;
 pub mod order_state;
 pub mod protocol_encoding;
 use configuration::*;
+use filled_settlement::*;
 use order_cancellation::*;
 use order_creation::*;
 
@@ -23,6 +25,9 @@ pub mod settlement_lab {
     }
     pub fn create_order(ctx: Context<CreateOrder>, args: CreateOrderArgs) -> Result<()> {
         order_creation::create_order(ctx, args)
+    }
+    pub fn accept_filled(ctx: Context<AcceptFilled>, args: AcceptFilledArgs) -> Result<()> {
+        filled_settlement::accept_filled(ctx, args)
     }
     pub fn request_cancel(
         ctx: Context<RequestCancel>,
