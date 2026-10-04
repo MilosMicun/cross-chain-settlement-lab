@@ -642,3 +642,352 @@ fn fill_validates_cash_then_quantity_before_existing_accounting() {
         fill_rejects_unchanged(account.clone(), cash, quantity, error);
     }
 }
+
+fn refund_rejects_unchanged(mut account: Accounting, cash: u64, expected: AccountingError) {
+    let before = bytes(&account);
+    assert_eq!(account.record_refund(cash), Err(expected));
+    assert_eq!(bytes(&account), before);
+}
+
+fn refund_succeeds_as(account: &mut Accounting, cash: u64, expected: Accounting) {
+    assert_eq!(account.record_refund(cash), Ok(()));
+    assert_eq!(*account, expected);
+    assert_eq!(bytes(account), bytes(&expected));
+}
+
+#[test]
+fn successful_refund_changes_only_total_refunded() {
+    let mut account = fixture();
+    refund_succeeds_as(
+        &mut account,
+        7,
+        Accounting {
+            total_refunded: 27,
+            ..fixture()
+        },
+    );
+    assert_eq!(account.outstanding_cash(), Ok(43));
+}
+
+#[test]
+fn smallest_and_largest_valid_per_order_refunds_are_accepted() {
+    for (cash, refunded, outstanding) in [
+        (1, 21, 9_223_372_036_854_775_806),
+        (MAX_ORDER_CASH, 9_223_372_036_854_775_827, 0),
+    ] {
+        let mut account = Accounting {
+            total_deposited: 9_223_372_036_854_775_857,
+            ..fixture()
+        };
+        refund_succeeds_as(
+            &mut account,
+            cash,
+            Accounting {
+                total_deposited: 9_223_372_036_854_775_857,
+                total_refunded: refunded,
+                ..fixture()
+            },
+        );
+        assert_eq!(account.outstanding_cash(), Ok(outstanding));
+    }
+}
+
+#[test]
+fn refund_exactly_exhausts_outstanding_cash() {
+    let mut account = fixture();
+    refund_succeeds_as(
+        &mut account,
+        50,
+        Accounting {
+            total_refunded: 70,
+            ..fixture()
+        },
+    );
+    assert_eq!(account.outstanding_cash(), Ok(0));
+    refund_rejects_unchanged(account, 1, AccountingError::PayoutsExceedDeposits);
+}
+
+#[test]
+fn refund_payout_limit_includes_existing_refunds_and_reimbursements() {
+    // Each record has 50 remaining; 51 must fail, including when the refund
+    // counter alone would remain below deposits.
+    for (refunded, reimbursed) in [(50, 0), (0, 50), (20, 30)] {
+        refund_rejects_unchanged(
+            Accounting {
+                total_refunded: refunded,
+                total_reimbursed: reimbursed,
+                ..fixture()
+            },
+            51,
+            AccountingError::PayoutsExceedDeposits,
+        );
+    }
+}
+
+#[test]
+fn zero_and_oversized_refund_cash_reject_unchanged() {
+    refund_rejects_unchanged(
+        fixture(),
+        0,
+        AccountingError::InvalidAmount(ValidationError::ZeroCash),
+    );
+    for cash in [MAX_ORDER_CASH + 1, u64::MAX] {
+        refund_rejects_unchanged(
+            fixture(),
+            cash,
+            AccountingError::InvalidAmount(ValidationError::CashTooLarge),
+        );
+    }
+}
+
+// Extreme u128 counters are synthetic host arithmetic fixtures. They do not
+// demonstrate economically reachable token flows or an on-chain refund.
+#[test]
+fn refund_rejects_existing_payout_sum_overflow_unchanged() {
+    refund_rejects_unchanged(
+        Accounting {
+            total_deposited: u128::MAX,
+            total_refunded: u128::MAX - 1,
+            total_reimbursed: 2,
+            ..fixture()
+        },
+        1,
+        AccountingError::ArithmeticOverflow,
+    );
+}
+
+#[test]
+fn refund_rejects_existing_payouts_exceeding_deposits_unchanged() {
+    for (refunded, reimbursed) in [(101, 0), (0, 101), (51, 50)] {
+        refund_rejects_unchanged(
+            Accounting {
+                total_refunded: refunded,
+                total_reimbursed: reimbursed,
+                ..fixture()
+            },
+            1,
+            AccountingError::PayoutsExceedDeposits,
+        );
+    }
+}
+
+#[test]
+fn refund_candidate_total_refunded_overflow_preserves_record() {
+    refund_rejects_unchanged(
+        Accounting {
+            total_deposited: u128::MAX,
+            total_refunded: u128::MAX,
+            total_reimbursed: 0,
+            ..fixture()
+        },
+        1,
+        AccountingError::ArithmeticOverflow,
+    );
+}
+
+#[test]
+fn refund_candidate_combined_payout_overflows_with_refund_capacity() {
+    refund_rejects_unchanged(
+        Accounting {
+            total_deposited: u128::MAX,
+            total_refunded: u128::MAX - 31,
+            total_reimbursed: 30,
+            ..fixture()
+        },
+        2,
+        AccountingError::ArithmeticOverflow,
+    );
+}
+
+#[test]
+fn refund_exact_u128_boundary_succeeds_then_overflow_is_immutable() {
+    for cash in [1, MAX_ORDER_CASH] {
+        for reimbursed in [0, 1] {
+            let mut account = Accounting {
+                total_deposited: u128::MAX,
+                total_refunded: u128::MAX - reimbursed - u128::from(cash),
+                total_reimbursed: reimbursed,
+                ..fixture()
+            };
+            refund_succeeds_as(
+                &mut account,
+                cash,
+                Accounting {
+                    total_deposited: u128::MAX,
+                    total_refunded: u128::MAX - reimbursed,
+                    total_reimbursed: reimbursed,
+                    ..fixture()
+                },
+            );
+            assert_eq!(account.outstanding_cash(), Ok(0));
+            refund_rejects_unchanged(account, 1, AccountingError::ArithmeticOverflow);
+        }
+    }
+}
+
+#[test]
+fn cumulative_refunds_cross_u64_without_losing_precision() {
+    let mut account = Accounting {
+        total_deposited: 27_670_116_110_564_327_451,
+        total_refunded: 0,
+        ..fixture()
+    };
+    for (refunded, outstanding) in [
+        (9_223_372_036_854_775_807, 18_446_744_073_709_551_614),
+        (18_446_744_073_709_551_614, 9_223_372_036_854_775_807),
+        (27_670_116_110_564_327_421, 0),
+    ] {
+        refund_succeeds_as(
+            &mut account,
+            MAX_ORDER_CASH,
+            Accounting {
+                total_deposited: 27_670_116_110_564_327_451,
+                total_refunded: refunded,
+                ..fixture()
+            },
+        );
+        assert_eq!(account.outstanding_cash(), Ok(outstanding));
+    }
+    assert!(account.total_refunded > u128::from(u64::MAX));
+    let serialized = bytes(&account);
+    assert_eq!(
+        Accounting::try_deserialize(&mut serialized.as_slice()).unwrap(),
+        account
+    );
+}
+
+#[test]
+fn refund_preserves_maximum_cumulative_issuance() {
+    let mut account = Accounting {
+        total_shares_minted: u128::MAX,
+        ..fixture()
+    };
+    refund_succeeds_as(
+        &mut account,
+        7,
+        Accounting {
+            total_refunded: 27,
+            total_shares_minted: u128::MAX,
+            ..fixture()
+        },
+    );
+    assert_eq!(account.outstanding_cash(), Ok(43));
+}
+
+#[test]
+fn refund_validates_cash_before_existing_accounting_and_candidate_payouts() {
+    for (account, existing_error) in [
+        (
+            Accounting {
+                total_deposited: 0,
+                total_refunded: u128::MAX,
+                total_reimbursed: 1,
+                ..fixture()
+            },
+            AccountingError::ArithmeticOverflow,
+        ),
+        (
+            Accounting {
+                total_deposited: 0,
+                total_refunded: u128::MAX,
+                total_reimbursed: 0,
+                ..fixture()
+            },
+            AccountingError::PayoutsExceedDeposits,
+        ),
+    ] {
+        for (cash, error) in [
+            (0, AccountingError::InvalidAmount(ValidationError::ZeroCash)),
+            (
+                u64::MAX,
+                AccountingError::InvalidAmount(ValidationError::CashTooLarge),
+            ),
+            (1, existing_error),
+        ] {
+            // The second record would also overflow the candidate refund.
+            // Existing accounting must win once cash validation succeeds.
+            refund_rejects_unchanged(account.clone(), cash, error);
+        }
+    }
+}
+
+#[test]
+fn mixed_deposits_fills_and_refunds_match_independent_intermediate_counters() {
+    enum Operation {
+        Deposit(u64),
+        Fill(u64, u64),
+        Refund(u64),
+    }
+    use Operation::*;
+
+    let mut account = Accounting {
+        total_deposited: 0,
+        total_refunded: 0,
+        total_reimbursed: 0,
+        total_shares_minted: 0,
+        ..fixture()
+    };
+    // Four full orders: fill 6 and 9 mock USD; refund 4 and 2 mock USD,
+    // then a fifth order refunds 3. Literal expectations use six decimals.
+    for (operation, counters, outstanding) in [
+        (Deposit(6_000_000), [6_000_000, 0, 0, 0], 6_000_000),
+        (Deposit(4_000_000), [10_000_000, 0, 0, 0], 10_000_000),
+        (
+            Fill(6_000_000, 12_000_000),
+            [10_000_000, 0, 6_000_000, 12_000_000],
+            4_000_000,
+        ),
+        (
+            Refund(4_000_000),
+            [10_000_000, 4_000_000, 6_000_000, 12_000_000],
+            0,
+        ),
+        (
+            Deposit(9_000_000),
+            [19_000_000, 4_000_000, 6_000_000, 12_000_000],
+            9_000_000,
+        ),
+        (
+            Deposit(2_000_000),
+            [21_000_000, 4_000_000, 6_000_000, 12_000_000],
+            11_000_000,
+        ),
+        (
+            Refund(2_000_000),
+            [21_000_000, 6_000_000, 6_000_000, 12_000_000],
+            9_000_000,
+        ),
+        (
+            Deposit(3_000_000),
+            [24_000_000, 6_000_000, 6_000_000, 12_000_000],
+            12_000_000,
+        ),
+        (
+            Fill(9_000_000, 18_000_000),
+            [24_000_000, 6_000_000, 15_000_000, 30_000_000],
+            3_000_000,
+        ),
+        (
+            Refund(3_000_000),
+            [24_000_000, 9_000_000, 15_000_000, 30_000_000],
+            0,
+        ),
+    ] {
+        match operation {
+            Deposit(cash) => assert_eq!(account.record_deposit(cash), Ok(())),
+            Fill(cash, quantity) => assert_eq!(account.record_fill(cash, quantity), Ok(())),
+            Refund(cash) => assert_eq!(account.record_refund(cash), Ok(())),
+        }
+        let [total_deposited, total_refunded, total_reimbursed, total_shares_minted] = counters;
+        let expected = Accounting {
+            total_deposited,
+            total_refunded,
+            total_reimbursed,
+            total_shares_minted,
+            ..fixture()
+        };
+        assert_eq!(account, expected);
+        assert_eq!(bytes(&account), bytes(&expected));
+        assert_eq!(account.outstanding_cash(), Ok(outstanding));
+    }
+}

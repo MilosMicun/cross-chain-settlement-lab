@@ -73,6 +73,40 @@ impl Accounting {
         Ok(())
     }
 
+    /// Record one refund in base units using checked accounting arithmetic only.
+    /// Every failure preserves the entire record; success changes only refunds.
+    ///
+    /// The caller must authenticate the configured operator and canonical
+    /// accounts, validate immutable terms, prior user cancellation, and the
+    /// terminal Cancelled receipt with zero output. Only a newly accepted
+    /// cancellation calls this helper; exact replay must bypass it entirely.
+    /// The helper itself does not prevent duplicate calls, inspect an Order,
+    /// accept receipts, transfer tokens, or authenticate accounts.
+    /// The future instruction must atomically combine this update with the
+    /// escrow transfer and persistent Refunded/AcceptedReceipt state.
+    /// Timeout, execution failure, or missing acknowledgement is not permission
+    /// to refund. Refunds do not mint YES or decrease cumulative issuance.
+    /// Unsolicited escrow donations, rent, and fees are outside these counters.
+    pub fn record_refund(&mut self, cash_amount: u64) -> std::result::Result<(), AccountingError> {
+        // A fixed positive minimum reuses cash validation, not the order's
+        // actual minimum shares.
+        validate_amounts(cash_amount, 1).map_err(AccountingError::InvalidAmount)?;
+        self.outstanding_cash()?;
+        let refunded = self
+            .total_refunded
+            .checked_add(u128::from(cash_amount))
+            .ok_or(AccountingError::ArithmeticOverflow)?;
+        let payouts = refunded
+            .checked_add(self.total_reimbursed)
+            .ok_or(AccountingError::ArithmeticOverflow)?;
+        if payouts > self.total_deposited {
+            return Err(AccountingError::PayoutsExceedDeposits);
+        }
+
+        self.total_refunded = refunded;
+        Ok(())
+    }
+
     /// Record one fill's reimbursement and cumulative YES issuance in base units.
     /// Every failure preserves the entire record; success changes only those
     /// two counters. This helper performs checked accounting arithmetic only.
