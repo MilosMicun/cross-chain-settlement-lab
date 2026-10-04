@@ -1,5 +1,6 @@
 use anchor_lang::prelude::*;
 
+pub mod accounting;
 pub mod configuration;
 pub mod order_cancellation;
 pub mod order_creation;
