@@ -7,6 +7,7 @@ use anchor_spl::{
 };
 
 use crate::{
+    accounting::{Accounting, AccountingError},
     configuration::Config,
     order_state::{
         checked_next_nonce, validate_amounts, Order, OrderState, UserNonce, ValidationError,
@@ -28,6 +29,10 @@ pub struct CreateOrder<'info> {
     pub user: Signer<'info>,
     #[account(seeds = [b"config"], bump, constraint = config.bump == Pubkey::find_program_address(&[b"config"], &crate::ID).1 @ CreationError::InvalidBinding)]
     pub config: Box<Account<'info, Config>>,
+    #[account(mut, seeds = [b"accounting", config.key().as_ref()], bump,
+        constraint = accounting.config == config.key() @ CreationError::AccountingInvalidBinding,
+        constraint = accounting.bump == Pubkey::find_program_address(&[b"accounting", config.key().as_ref()], &crate::ID).1 @ CreationError::AccountingInvalidBinding)]
+    pub accounting: Box<Account<'info, Accounting>>,
     #[account(init_if_needed, payer = user, space = 8 + UserNonce::INIT_SPACE,
         seeds = [b"user", config.key().as_ref(), user.key().as_ref()], bump)]
     pub user_nonce: Box<Account<'info, UserNonce>>,
@@ -104,6 +109,7 @@ pub fn create_order(ctx: Context<CreateOrder>, args: CreateOrderArgs) -> Result<
     let keys = [
         a.user.key(),
         c.key(),
+        a.accounting.key(),
         a.user_nonce.key(),
         a.order.key(),
         a.cash_mint.key(),
@@ -223,6 +229,11 @@ pub fn create_order(ctx: Context<CreateOrder>, args: CreateOrderArgs) -> Result<
         .map_err(creation_validation_error)?;
     let user_before = a.user_cash_ata.amount;
     let escrow_before = escrow.amount;
+    // Replay returns above. This checked update and all subsequent token/state
+    // operations roll back together if any part of NEW creation fails.
+    a.accounting
+        .record_deposit(args.cash_amount)
+        .map_err(accounting_error)?;
     token::transfer_checked(
         CpiContext::new(
             a.token_program.key(),
@@ -301,6 +312,16 @@ fn creation_validation_error(error: ValidationError) -> anchor_lang::error::Erro
         ValidationError::ZeroMinimum => error!(CreationError::ZeroMinimum),
         ValidationError::NonceMismatch => error!(CreationError::NonceMismatch),
         ValidationError::NonceExhausted => error!(CreationError::NonceExhausted),
+    }
+}
+
+fn accounting_error(error: AccountingError) -> anchor_lang::error::Error {
+    match error {
+        AccountingError::InvalidAmount(error) => creation_validation_error(error),
+        AccountingError::ArithmeticOverflow => error!(CreationError::AccountingArithmeticOverflow),
+        AccountingError::PayoutsExceedDeposits => {
+            error!(CreationError::AccountingPayoutsExceedDeposits)
+        }
     }
 }
 

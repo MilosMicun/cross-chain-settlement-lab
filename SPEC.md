@@ -176,6 +176,7 @@ literal seeds (public keys are raw bytes, nonce is eight-byte big-endian):
 | Account | Seeds / required binding |
 | --- | --- |
 | Configuration | `[b"config"]`; program-owned singleton, never closed/reinitialized. |
+| Accounting | `[b"accounting", config_pubkey]`; permanent program-owned 105-byte record with canonical bump and stored Config; initialized atomically with Config, never closed/reset. |
 | User nonce | `[b"user", config_pubkey, original_user]`; permanent program-owned counter. |
 | Order | `[b"order", config_pubkey, original_user, nonce_bytes]`; permanent terms/status/receipt record. |
 | Cash escrow | `[b"escrow", order_pubkey]`; legacy SPL token account, configured cash mint, token authority = order PDA, no delegate/external close authority. |
@@ -218,6 +219,17 @@ balances must also fit SPL uint64 limits; exceeding token capacity reverts
 atomically. Order-accounting totals use checked uint128-compatible counters;
 reject overflow in every runtime. Setup faucet cash minting is separate from
 order accounting; it never mints source YES.
+
+Source Accounting stores four checked u128 counters in base units: accepted
+new-order deposits (`total_deposited`), refunds (`total_refunded`), executor
+reimbursements (`total_reimbursed`), and cumulative YES issuance
+(`total_shares_minted`, unaffected by user burns). All start at zero. Creation
+records each deposit once, atomically with its token transfer, permanent Order,
+and nonce advancement; exact replay and cancellation requests change no counters.
+Order-attributable outstanding cash is deposited minus refunded and reimbursed;
+reject overflow or payouts exceeding deposits. Faucet minting, unsolicited
+escrow donations, rent, and fees are separate. Deposit accounting is implemented;
+receipt processing and the other three counter updates remain unimplemented.
 
 ### Complete encoding/hash test vector
 

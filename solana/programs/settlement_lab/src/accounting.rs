@@ -1,12 +1,12 @@
-//! Permanent source accounting state and checked arithmetic only.
-//! Instruction-level initialization, ownership/PDA checks, and authorization
-//! will be implemented separately; these helpers perform no token operations.
+//! Permanent source accounting state and checked arithmetic.
+//! Initialization and creation enforce authorization and account bindings;
+//! these helpers perform no token operations or receipt processing.
 
 use anchor_lang::prelude::*;
 
 use crate::order_state::{validate_amounts, ValidationError};
 
-/// Permanent account with planned canonical seeds `[b"accounting", config_pubkey]`.
+/// Permanent account with canonical seeds `[b"accounting", config_pubkey]`.
 /// Counters start at zero and use integer base units. Faucet minting, transfers
 /// between users, unsolicited escrow donations, SOL rent, and transaction fees
 /// are outside these counters. This record must never be closed or reset.
@@ -50,8 +50,8 @@ impl Accounting {
     /// Record a valid deposit only after checking the existing cash accounting.
     /// Every failure preserves the entire record; success changes only deposits.
     ///
-    /// This helper does not prevent duplicate calls. Future instructions must
-    /// invoke it only on successful NEW order creation and bypass it on replay,
+    /// This helper does not prevent duplicate calls. Creation invokes it only
+    /// on the NEW order path and bypasses it on replay,
     /// atomically with the order creation and token operations.
     pub fn record_deposit(&mut self, cash_amount: u64) -> std::result::Result<(), AccountingError> {
         // A fixed positive minimum reuses the existing v1 cash validation.

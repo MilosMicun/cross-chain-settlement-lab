@@ -5,7 +5,8 @@ and one-time Anchor initialization have been verified within their respective
 test scopes. The EVM Settlement implements atomic purchases, permanent
 cancellation, and terminal replay handling. The Anchor program currently
 exposes `initialize`, `create_order`, and `request_cancel`. Order creation
-atomically deposits legacy SPL cash into the canonical escrow and persists a permanent identity;
+atomically deposits legacy SPL cash into the canonical escrow, counts the deposit
+in permanent Accounting, and persists a permanent identity;
 exact creation replay preserves accounts without another deposit. User-signed
 cancellation records intent while keeping cash locked; exact cancellation replay has no additional effect. Receipt acceptance, reimbursement,
 refunds, YES issuance, and cross-chain transport/integration are not implemented.
@@ -189,14 +190,18 @@ outcome 0; Solana operator/executor; validated cash/YES mints and executor cash
 ATA; the derived YES mint authority; exact legacy token, associated-token, and
 system programs; and the configuration/YES authority bumps. There are no
 configuration setters or reset/close paths. Config contains no aggregate
-accounting counters or order records; creation stores those identities separately.
+accounting counters or order records; separate permanent accounts store them.
+Initialization also creates the canonical `[b"accounting", config_pubkey]` PDA
+using `init`, with 105 bytes including its discriminator, stored Config, canonical
+bump, and four zero u128 counters. Config and Accounting succeed or fail together;
+neither record can be reset, closed, backfilled, or initialized lazily.
 
 `Signer` proves possession of a signing key, not deployment authorization.
 The executable program must have this exact ID and belong to the upgradeable
 loader. Its linked ProgramData must match the supplied typed loader-owned
 ProgramData, whose current upgrade authority must equal the initializer signer.
 Accepting any ProgramData with that signer would allow an unrelated deployment
-to authorize this program. The initializer pays the configuration rent.
+to authorize this program. The initializer pays both records' rent.
 
 Real SPL setup transactions prepare legacy six-decimal mints without freeze
 authorities, zero initial YES supply under `[b"yes-authority", config_pubkey]`,
@@ -211,16 +216,18 @@ Distinct Node subtests cover unauthorized first callers, a non-signing authority
 with a separate fee payer, substituted program/ProgramData accounts, invalid
 configuration, real SPL mint/account variations, and Token-2022 substitution.
 Rejected attempts are sent with preflight disabled, then require finalized
-failed transaction metadata, the expected on-chain error, no Config creation,
-and unchanged raw fixture token/mint state. A timeout or client construction
+failed transaction metadata, the expected on-chain error, no Config or Accounting
+creation, and unchanged raw fixture token/mint state. A timeout or client construction
 failure fails the test. Successful initialization checks every stored field
 against an independently assembled byte layout, canonical PDAs/bumps, ownership,
 exact space, rent exemption, and unchanged token state. Both identical and
-changed reinitialization attempts must fail without changing Config or tokens.
+changed reinitialization attempts must fail without changing either record or
+tokens.
 
 Finally, the real local `solana program set-upgrade-authority --final` operation
 removes the authority. The test reads back loader ProgramData with authority
-`None` and confirms Config remains readable and byte-for-byte unchanged.
+`None` and confirms Config and Accounting remain readable and byte-for-byte
+unchanged.
 It does not treat an existing-Config rejection as evidence of the
 missing-authority branch. Per-run `tests.log`, `validator.log`,
 `remove-authority.log`, and `evidence.json` preserve public transaction signatures
@@ -254,7 +261,7 @@ git diff --check
 ```
 
 The orders wrapper selects the existing validator runner's explicit `--orders`
-mode. It first runs the unchanged initialization suite, including genuine loader
+mode. It first runs the initialization suite, including genuine loader
 upgrade-authority removal, then runs `test:orders` on that same validator.
 `check-solana-initialization.sh` remains initialization-only. Both IDL guards
 require exactly `initialize`, `create_order`, and `request_cancel`, regardless of
@@ -297,16 +304,21 @@ After authorization/bindings, existing creation verifies full terms and canonica
 hashes and returns without changing lifecycle, cancellation flag, receipt,
 nonce, or balances. It does not require Pending, the original escrow balance,
 or cash for another deposit. Changed valid terms return `TermsConflict`. New
-creation checks the next nonce, transfers exactly the deposit via
-`transfer_checked`, reloads and verifies both token balance deltas, persists all
-Order fields in Pending, and advances the counter once. Account rent, allocation,
+creation checks the next nonce, calls checked `record_deposit` once, then transfers
+exactly the deposit via `transfer_checked`, reloads and verifies both token balance
+deltas, persists all Order fields in Pending, and advances the counter once.
+Account rent, allocation,
 escrow initialization, transfer, order persistence, and counter advancement are
-one atomic transaction. Only successful new creation emits `OrderCreated`.
+one atomic transaction, including the Accounting update. Only successful new
+creation emits `OrderCreated`. A failed transfer preserves the complete Accounting
+record, including for fresh and existing UserNonce accounts.
 
 Anchor's IDL generator permits one error enum, so `configuration.rs` also gains
 the creation variants in its existing enum, starting explicitly at code 7000.
-Initialization's existing codes and behavior remain unchanged. This is the only
-additional file beyond the task's expected edit list; Config layout is unchanged.
+Initialization's existing codes remain unchanged; Config layout is unchanged.
+Accounting errors reserve 9000 onward in the same enum. Invalid cash amounts
+retain their existing creation codes; arithmetic overflow and payouts exceeding
+deposits remain distinct errors.
 
 The creation suite uses actual signed transactions, legacy SPL fixtures, and
 independently concatenated Node crypto SHA-256 preimages with explicit uint64
@@ -326,9 +338,9 @@ under the runner's unique `.runtime/initialization-*` directory.
 No production test hooks or validator storage mutations are used. Lifecycle
 replay is unrestricted in code; terminal-state on-chain replay awaits later
 business instructions. Arithmetic exhaustion remains covered by existing host
-tests. Cumulative source accounting is still required in a subsequent bounded
-task before source finalization. These checks establish local order creation and
-replay only, without source cancellation, settlement/refunds, YES issuance,
+tests. Deposit accounting is verified with real creation instructions; payout
+accounting awaits receipt processing. These checks establish local order creation and
+replay only, without settlement/refunds, YES issuance,
 transport, EVM integration, or a cross-chain demo.
 
 
@@ -396,9 +408,10 @@ dependency pins, lockfiles, initialization, and creation logic are preserved.
 
 The focused validator suite creates fresh signed users and real orders after
 genuine upgrade-authority removal. Raw account snapshots include Config, orders,
-counters, escrow, user/executor token accounts, mint supplies, rent, and user SOL;
-only the two lifecycle bytes may change on a first request. Transaction fees are
-checked separately against a fresh fee payer funded with 10 SOL (within the
+Accounting, nonce counters, escrow, user/executor token accounts, mint supplies,
+rent, and user SOL; only the two lifecycle bytes may change on a first request.
+Transaction fees are checked separately against a fresh fee payer funded with
+10 SOL (within the
 JavaScript safe integer range); the large genesis faucet is excluded from fee
 arithmetic. Replays and finalized executed
 failures preserve every tracked byte and balance. Successful cancellation and
@@ -411,8 +424,8 @@ signatures and outcomes remain in ignored `cancellation-evidence.json` alongside
 
 Terminal cancellation replay is verified only with realistic host receipt
 fixtures until real receipt-processing instructions exist. No validator storage
-injection or production test hooks are used. Cumulative accounting remains
-required before source finalization in a separate bounded task.
+injection or production test hooks are used. Deposit accounting is verified;
+receipt processing and payout/issuance counter updates remain unimplemented.
 
 
 Verified on 2026-10-04: the combined fresh-validator run passed 48 initialization,
@@ -435,3 +448,62 @@ fresh validator. No program changes were needed for that test correction. The
 existing LTO, bigint JavaScript fallback, and nonfatal sandboxed Foundry
 signature-cache warnings remain. Terminal replay coverage remains host-only;
 there is still no receipt processing, source payout, or cross-chain demo.
+
+## Source deposit accounting check
+
+Use the commands in the cancellation check above to run all three existing
+suites sequentially on one fresh validator. Historical ignored ledgers belong
+to prior immutable deployments; do not reuse or modify them for the new binary.
+
+The client account lists for `initialize` and `create_order` now require
+Accounting immediately after Config. Initialization creates it once under the
+same linked ProgramData/upgrade-authority authorization. Creation requires the
+existing writable typed account and checks its owner/discriminator, canonical
+PDA/bump, stored Config, and unsafe aliases on NEW and replay paths.
+`request_cancel` retains exactly its three accounts and performs no CPI.
+Config (580), UserNonce (81), Order (335), and Accounting (105) allocations and
+layouts, instruction arguments, program ID, encoding vectors, dependency pins,
+and both lockfiles remain unchanged.
+
+The validator suites independently reconcile their starting totals from all
+permanent orders for Config; creation inputs then advance a bigint expected
+total only after successful NEW creation. Independently serialized u128 bytes
+verify that only `total_deposited` changes. Snapshots cover missing/substituted
+Accounting, terms and amount/nonce rejection, failed transfers with fresh and
+existing nonces, replenishment/retry, stale/underfunded replay, and cancellation.
+Faucet minting and donations preserve Accounting. Final reconciliation sums
+all permanent order cash amounts and verifies each escrow retains its cash plus
+separately recorded donations. Refund, reimbursement, and cumulative YES
+issuance counters and YES supply remain zero. Evidence includes starting/final
+totals, order counts, donation amounts, and public transaction outcomes in the
+existing ignored JSON files.
+
+u128 overflow and payout arithmetic boundaries remain covered by the 14 host
+accounting tests; on-chain overflow is not claimed. No storage injection or
+production hooks are used. Receipt processing, payouts, and YES issuance remain
+unimplemented.
+
+Verified on 2026-10-04: one fresh combined run passed 49 initialization, 53
+creation, and 27 cancellation subtests (50, 54, and 28 Node tests including
+parents), with no failures or skips. Initialization verified all-zero Accounting,
+exact serialization/rent, atomic rejection, reinitialization rejection, and
+preservation after genuine authority removal. Creation recorded six orders,
+six exact replays, and 42 finalized rejections; deposits reached 50,000,001 base
+units. Cancellation independently began at that total and recorded six further
+orders, four first requests, six cancellation/creation replays, and 16 finalized
+rejections. Final deposits were 110,000,001 across 12 permanent orders, with
+14 donation units tracked separately. All cash stayed locked, all other counters
+and YES supply stayed zero, and failed transfers/retries and cancellation
+preserved the required accounting bytes.
+
+All 48 Rust host tests, locked workspace check, formatting check, pinned SBF/IDL
+build, TypeScript typecheck/import check, aggregate build, and whitespace check
+passed. The generated IDL contains Accounting, the two required account-list
+additions, exactly the existing three instructions, the unchanged program ID,
+and distinct new error codes 9000–9002 without changing previous codes. Owned
+processes stopped and all reserved TCP/UDP ports were released. Evidence remains
+under ignored `.runtime/initialization-m7h2f7a8/`. The runner needed socket and
+namespace access outside the restricted filesystem sandbox. Existing LTO,
+bigint JavaScript fallback, and nonfatal Foundry signature-cache write warnings
+remain; arithmetic overflow and terminal cancellation replay coverage remain
+host-only.

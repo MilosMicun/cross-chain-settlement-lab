@@ -32,6 +32,7 @@ const program = new Program<SettlementLab>(idl, provider);
 const programId = new PublicKey("7zLj7iNbNvV6m6nogUKgUuJKNw5wUWtfSvVTmcgqpfzK");
 assert.ok(program.programId.equals(programId));
 const [config] = PublicKey.findProgramAddressSync([Buffer.from("config")], programId);
+const [accounting, accountingBump] = PublicKey.findProgramAddressSync([Buffer.from("accounting"), config.toBuffer()], programId);
 const eventParser = new EventParser(programId, program.coder);
 const tracked = new Map<string, PublicKey>();
 let latestSlot = 0;
@@ -79,15 +80,52 @@ async function submit(instructions: TransactionInstruction[], signers: Keypair[]
   return { signature, receipt, events, feePayerBefore, feePayerAfter: (await info(feePayer.publicKey))!.lamports };
 }
 async function setup(instructions: TransactionInstruction[], signers: Keypair[] = []) {
+  const beforeAccounting = await info(accounting);
   const result = await submit(instructions, signers);
   assert.equal(result.receipt.meta!.err, null, JSON.stringify(result.receipt.meta!.logMessages));
+  assert.deepEqual(await info(accounting), beforeAccounting, "Faucet minting, donations, and fixture operations preserve Accounting");
+}
+
+// Totals are bigint throughout; expected increments come only from successful
+// creation inputs, never from Accounting, token balances, or creation events.
+let expectedDeposits = 0n;
+let startingDeposits = 0n;
+const donations = new Map<string, bigint>();
+const u128le = (value: bigint) => {
+  const bytes = Buffer.alloc(16);
+  bytes.writeBigUInt64LE(value & ((1n << 64n) - 1n), 0);
+  bytes.writeBigUInt64LE(value >> 64n, 8);
+  return bytes;
+};
+async function permanentOrders() {
+  return program.account.order.all([{ memcmp: { offset: 8, bytes: config.toBase58() } }]);
+}
+async function orderDepositSum() {
+  return (await permanentOrders()).reduce((sum, { account }) => sum + BigInt(account.cashAmount.toString()), 0n);
+}
+async function verifyAccounting() {
+  const ledger = await info(accounting); assert.ok(ledger);
+  assert.ok(ledger.owner.equals(programId)); assert.equal(ledger.executable, false);
+  const expected = Buffer.concat([sha(Buffer.from("account:Accounting")).subarray(0, 8),
+    config.toBuffer(), u128le(expectedDeposits), Buffer.alloc(48), Buffer.from([accountingBump])]);
+  assert.equal(ledger.data.length, 105);
+  assert.deepEqual(ledger.data, expected, "Exact cumulative deposits; every other accounting byte stays unchanged");
+  assert.equal(ledger.lamports, await connection.getMinimumBalanceForRentExemption(105, "finalized"));
+}
+async function reconcileLockedCash() {
+  assert.equal(await orderDepositSum(), expectedDeposits, "Deposits equal all permanent Config order cash amounts");
+  await verifyAccounting();
+  for (const { account } of await permanentOrders()) {
+    assert.equal(await tokenAmount(account.escrow), BigInt(account.cashAmount.toString()) +
+      (donations.get(account.escrow.toBase58()) ?? 0n), "Each deposit stays locked; known donations are separate");
+  }
 }
 
 let c: Awaited<ReturnType<typeof program.account.config.fetch>>;
 type User = { key: Keypair; cash: PublicKey; yes: PublicKey };
 type Terms = { nonce: bigint; cash: bigint; minimum: bigint };
 type Bindings = {
-  user: PublicKey; config: PublicKey; userNonce: PublicKey; order: PublicKey;
+  user: PublicKey; config: PublicKey; accounting: PublicKey; userNonce: PublicKey; order: PublicKey;
   cashMint: PublicKey; yesMint: PublicKey; userCashAta: PublicKey; userYesAta: PublicKey;
   escrow: PublicKey; tokenProgram: PublicKey; associatedTokenProgram: PublicKey; systemProgram: PublicKey;
 };
@@ -96,7 +134,7 @@ function bindings(user: User, nonce: bigint): Bindings {
   const [order] = PublicKey.findProgramAddressSync([Buffer.from("order"), config.toBuffer(), user.key.publicKey.toBuffer(), u64be(nonce)], programId);
   const [escrow] = PublicKey.findProgramAddressSync([Buffer.from("escrow"), order.toBuffer()], programId);
   track(userNonce, order, escrow);
-  return { user: user.key.publicKey, config, userNonce, order, cashMint: c.cashMint,
+  return { user: user.key.publicKey, config, accounting, userNonce, order, cashMint: c.cashMint,
     yesMint: c.yesMint, userCashAta: user.cash, userYesAta: user.yes, escrow,
     tokenProgram: TOKEN_PROGRAM_ID, associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
     systemProgram: SystemProgram.programId };
@@ -163,9 +201,16 @@ function record(name: string, result: Awaited<ReturnType<typeof submit>>) {
 }
 async function create(user: User, terms: Terms) {
   const a = bindings(user, terms.nonce);
+  await verifyAccounting();
+  const beforeAccounting = await info(accounting); assert.ok(beforeAccounting);
   const beforeCash = await tokenAmount(user.cash);
   const result = await submit([await instruction(user, terms)], [user.key]);
   assert.equal(result.receipt.meta!.err, null, JSON.stringify(result.receipt.meta!.logMessages));
+  expectedDeposits += terms.cash;
+  await verifyAccounting();
+  const expectedAccounting = Buffer.from(beforeAccounting.data);
+  u128le(expectedDeposits).copy(expectedAccounting, 40);
+  assert.deepEqual(await info(accounting), { ...beforeAccounting, data: expectedAccounting }, "NEW creation changes only deposits once");
   assert.equal(result.events.length, 1); assert.equal(result.events[0].name, "orderCreated");
   assert.equal(await tokenAmount(user.cash), beforeCash - terms.cash);
   assert.equal(await tokenAmount(a.escrow), terms.cash);
@@ -249,7 +294,13 @@ test("actual SBF user cancellation intent without payout", { timeout: 850_000 },
     await setup([SystemProgram.transfer({ fromPubkey: faucet.publicKey, toPubkey: payer.publicKey, lamports: 10_000_000_000 })]);
     feePayer = payer;
     c = await program.account.config.fetch(config, "finalized");
-    track(config, c.cashMint, c.yesMint, c.executorCashAta, programData, programId);
+    startingDeposits = await orderDepositSum();
+    expectedDeposits = startingDeposits;
+    await verifyAccounting();
+    const priorEvidence = JSON.parse(readFileSync(join(runtime, "orders-evidence.json"), "utf8")) as { donations: [string, string][] };
+    for (const [escrow, amount] of priorEvidence.donations) donations.set(escrow, BigInt(amount));
+    await reconcileLockedCash();
+    track(config, accounting, c.cashMint, c.yesMint, c.executorCashAta, programData, programId);
     alice = await userFixture(30_000_000n); bob = await userFixture(10_000_000n);
     empty = await userFixture(10_000_000n); detached = await userFixture(10_000_000n);
     a = await create(alice, first); b = await create(bob, first);
@@ -310,17 +361,25 @@ test("actual SBF user cancellation intent without payout", { timeout: 850_000 },
     const pending = bindings(alice, second.nonce);
     await setup([createMintToInstruction(c.cashMint, bob.cash, faucet.publicKey, 7n)]);
     await setup([createTransferCheckedInstruction(bob.cash, c.cashMint, pending.escrow, bob.key.publicKey, 7n, 6)], [bob.key]);
+    donations.set(pending.escrow.toBase58(), 7n);
+    await verifyAccounting();
     assert.equal(await tokenAmount(pending.escrow), second.cash + 7n);
     await request("donated escrow first cancellation", alice, second, true);
     await request("donated escrow duplicate", alice, second, false);
     await creationReplay(alice, second);
     assert.equal(await tokenAmount(pending.escrow), second.cash + 7n);
   });
-  await t.test("persist finalized evidence; terminal replay remains host-only", async () => {
+  await t.test("reconcile all deposits and locked cash; terminal replay remains host-only", async () => {
+    await reconcileLockedCash();
     assert.equal(unpackMint(c.yesMint, (await info(c.yesMint))!).supply, 0n);
     assert.equal(String((await program.account.userNonce.fetch(a.userNonce, "finalized")).nextNonce), "3");
     assert.equal(await tokenAmount(a.escrow), first.cash);
     writeFileSync(join(runtime, "cancellation-evidence.json"), JSON.stringify({
+      accounting: accounting.toBase58(), accountingSpace: 105,
+      startingDeposits: startingDeposits.toString(), totalDeposited: expectedDeposits.toString(),
+      totalRefunded: "0", totalReimbursed: "0", totalSharesMinted: "0",
+      permanentOrderCount: (await permanentOrders()).length,
+      donations: [...donations].map(([escrow, amount]) => [escrow, amount.toString()]),
       programId: programId.toBase58(), upgradeAuthority: null, terminalReplay: "host fixtures only",
       finalizedRejectedTransactions: evidence.filter((entry) => entry.error !== null).length,
       cancellationRequests: evidence.filter((entry) => entry.events === 1 && entry.name !== "create fixture").length,

@@ -1,3 +1,4 @@
+use crate::accounting::Accounting;
 use anchor_lang::{prelude::*, solana_program::bpf_loader_upgradeable};
 use anchor_spl::{
     associated_token::{get_associated_token_address_with_program_id, AssociatedToken},
@@ -64,6 +65,9 @@ pub struct Initialize<'info> {
     pub program_data: Account<'info, ProgramData>,
     #[account(init, payer = initializer, space = 8 + Config::INIT_SPACE, seeds = [b"config"], bump)]
     pub config: Account<'info, Config>,
+    #[account(init, payer = initializer, space = 8 + Accounting::INIT_SPACE,
+        seeds = [b"accounting", config.key().as_ref()], bump)]
+    pub accounting: Account<'info, Accounting>,
     pub cash_mint: Account<'info, Mint>,
     pub yes_mint: Account<'info, Mint>,
     pub executor_cash_ata: Account<'info, TokenAccount>,
@@ -204,6 +208,14 @@ pub fn initialize(ctx: Context<Initialize>, args: InitializeArgs) -> Result<()> 
         bump: ctx.bumps.config,
         yes_authority_bump,
     });
+    accounts.accounting.set_inner(Accounting {
+        config: accounts.config.key(),
+        total_deposited: 0,
+        total_refunded: 0,
+        total_reimbursed: 0,
+        total_shares_minted: 0,
+        bump: ctx.bumps.accounting,
+    });
     Ok(())
 }
 
@@ -303,4 +315,12 @@ pub enum InitializationError {
     CancellationInconsistentRecord,
     #[msg("A terminal order cannot accept a new cancellation request")]
     CancellationTerminalWithoutRequest,
+
+    // Accounting codes start at 9000; all earlier codes remain unchanged.
+    #[msg("Accounting does not match its canonical configuration or bump")]
+    AccountingInvalidBinding = 3000,
+    #[msg("Checked source accounting arithmetic overflowed")]
+    AccountingArithmeticOverflow,
+    #[msg("Recorded source payouts exceed accepted deposits")]
+    AccountingPayoutsExceedDeposits,
 }

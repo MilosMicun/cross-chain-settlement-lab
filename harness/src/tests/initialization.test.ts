@@ -17,7 +17,7 @@ import {
 } from "@solana/spl-token";
 import {
   Connection, Keypair, PublicKey, SystemProgram, Transaction,
-  type TransactionInstruction,
+  type ParsedInstruction, type PartiallyDecodedInstruction, type TransactionInstruction,
 } from "@solana/web3.js";
 
 const root = resolve(import.meta.dirname, "../../..");
@@ -36,6 +36,7 @@ const loader = new PublicKey("BPFLoaderUpgradeab1e11111111111111111111111");
 const [programData] = PublicKey.findProgramAddressSync([programId.toBuffer()], loader);
 const [unrelatedData] = PublicKey.findProgramAddressSync([unrelatedProgram.toBuffer()], loader);
 const [config, configBump] = PublicKey.findProgramAddressSync([Buffer.from("config")], programId);
+const [accounting, accountingBump] = PublicKey.findProgramAddressSync([Buffer.from("accounting"), config.toBuffer()], programId);
 const [yesAuthority, yesBump] = PublicKey.findProgramAddressSync([Buffer.from("yes-authority"), config.toBuffer()], programId);
 const executor = Keypair.generate();
 const operator = Keypair.generate();
@@ -124,7 +125,7 @@ async function state() {
 }
 
 type Bindings = {
-  initializer: PublicKey; program: PublicKey; programData: PublicKey; config: PublicKey;
+  initializer: PublicKey; program: PublicKey; programData: PublicKey; config: PublicKey; accounting: PublicKey;
   cashMint: PublicKey; yesMint: PublicKey; executorCashAta: PublicKey;
   tokenProgram: PublicKey; associatedTokenProgram: PublicKey; systemProgram: PublicKey;
 };
@@ -133,6 +134,7 @@ let cashMint: PublicKey;
 let yesMint: PublicKey;
 let reimbursement: PublicKey;
 let preservedConfig: Buffer;
+let preservedAccounting: Buffer;
 let preservedTokens: Awaited<ReturnType<typeof state>>;
 const evidence: { name: string; signature: string; error: unknown }[] = [];
 
@@ -143,7 +145,9 @@ async function initializeInstruction(changes: Partial<typeof args> = {}, account
 async function rejected(name: string, expected: string, changes: Partial<typeof args> = {}, accountChanges: Partial<Bindings> = {}, signer = authority, nonSigning = false, existing = false) {
   const before = await state();
   const beforeConfig = await connection.getAccountInfo(config, { commitment: "finalized", minContextSlot: latestSlot });
+  const beforeAccounting = await connection.getAccountInfo(accounting, { commitment: "finalized", minContextSlot: latestSlot });
   assert.equal(beforeConfig !== null, existing);
+  assert.equal(beforeAccounting !== null, existing);
   const ix = await initializeInstruction(changes, accountChanges);
   if (nonSigning) {
     const key = ix.keys.find((meta) => meta.pubkey.equals(authority.publicKey));
@@ -158,11 +162,17 @@ async function rejected(name: string, expected: string, changes: Partial<typeof 
   const error = receipt.meta!.err as { InstructionError?: [number, unknown] };
   assert.equal(error.InstructionError?.[0], 0, `${name}: failure must be in initialize`);
   const afterConfig = await connection.getAccountInfo(config, { commitment: "finalized", minContextSlot: latestSlot });
+  const afterAccounting = await connection.getAccountInfo(accounting, { commitment: "finalized", minContextSlot: latestSlot });
   if (existing) {
     assert.ok(afterConfig && beforeConfig);
     assert.deepEqual(afterConfig, beforeConfig);
+    assert.deepEqual(afterAccounting, beforeAccounting);
   } else {
     assert.equal(afterConfig, null, `${name}: failed transaction created Config`);
+    assert.equal(afterAccounting, null, `${name}: failed transaction created Accounting`);
+  }
+  if (accountChanges.accounting && !accountChanges.accounting.equals(accounting)) {
+    assert.equal(await connection.getAccountInfo(accountChanges.accounting, "finalized"), null);
   }
   assert.deepEqual(await state(), before, `${name}: token data/supply/balances changed`);
   evidence.push({ name, signature, error: receipt.meta!.err });
@@ -190,7 +200,7 @@ test("actual SBF one-time initialization", { timeout: 850_000 }, async (t) => {
     yesMint = await mint({ mintAuthority: yesAuthority });
     reimbursement = await tokenAccount(cashMint, executor.publicKey, true);
     await setup([createMintToInstruction(cashMint, reimbursement, authority.publicKey, 10_000_000n)]);
-    bindings = { initializer: authority.publicKey, program: programId, programData, config,
+    bindings = { initializer: authority.publicKey, program: programId, programData, config, accounting,
       cashMint, yesMint, executorCashAta: reimbursement, tokenProgram: TOKEN_PROGRAM_ID,
       associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID, systemProgram: SystemProgram.programId };
   });
@@ -200,6 +210,8 @@ test("actual SBF one-time initialization", { timeout: 850_000 }, async (t) => {
   await t.test("reject wrong executable program", () => rejected("wrong executable", "InvalidProgramId", {}, { program: unrelatedProgram }));
   await t.test("reject unrelated ProgramData naming the same authority", () => rejected("unlinked ProgramData", "UnlinkedProgramData", {}, { programData: unrelatedData }));
   await t.test("reject noncanonical Config address", () => rejected("wrong Config seeds", "ConstraintSeeds", {}, { config: wrongSigner.publicKey }));
+  await t.test("reject noncanonical Accounting address atomically with Config", () => rejected(
+    "wrong Accounting seeds", "ConstraintSeeds", {}, { accounting: Keypair.generate().publicKey }));
   await t.test("reject wrong-owner ProgramData", () => rejected("wrong-owner ProgramData", "AccountOwnedByWrongProgram", {}, { programData: cashMint }));
   await t.test("reject loader-owned non-ProgramData variant", () => rejected("wrong loader variant", "AccountNotProgramData", {}, { programData: programId }));
   await t.test("reject genuinely allocated malformed loader account", async () => {
@@ -314,6 +326,31 @@ test("actual SBF one-time initialization", { timeout: 850_000 }, async (t) => {
     assert.equal(account.data.length, 580);
     assert.deepEqual(account.data, expected);
     assert.equal(account.lamports, await connection.getMinimumBalanceForRentExemption(580, "finalized"));
+    const ledger = await connection.getAccountInfo(accounting, { commitment: "finalized", minContextSlot: latestSlot });
+    assert.ok(ledger);
+    assert.ok(ledger.owner.equals(programId)); assert.equal(ledger.executable, false);
+    const expectedAccounting = Buffer.concat([
+      createHash("sha256").update("account:Accounting").digest().subarray(0, 8),
+      config.toBuffer(), Buffer.alloc(64), Buffer.from([accountingBump]),
+    ]);
+    assert.equal(expectedAccounting.length, 105); assert.equal(ledger.data.length, 105);
+    assert.deepEqual(ledger.data, expectedAccounting, "Independent all-zero u128 Accounting serialization");
+    assert.equal(ledger.lamports, await connection.getMinimumBalanceForRentExemption(105, "finalized"));
+    const parsed = await connection.getParsedTransaction(signature, { commitment: "finalized", maxSupportedTransactionVersion: 0 });
+    assert.ok(parsed?.meta);
+    for (const [address, rent] of [[config, account.lamports], [accounting, ledger.lamports]] as const) {
+      const allocation: ParsedInstruction | PartiallyDecodedInstruction | undefined = parsed.meta.innerInstructions?.flatMap((entry) => entry.instructions).find((ix) =>
+        "parsed" in ix && ix.program === "system" && ix.parsed.type === "createAccount" &&
+        ix.parsed.info.newAccount === address.toBase58());
+      assert.ok(allocation && "parsed" in allocation, "Real system CPI creates each permanent record");
+      assert.equal(allocation.parsed.info.source, authority.publicKey.toBase58());
+      assert.equal(allocation.parsed.info.lamports, rent, "Initializer pays exact rent for both records");
+    }
+    const counters = await program.account.accounting.fetch(accounting, "finalized");
+    assert.ok(counters.config.equals(config)); assert.equal(counters.bump, accountingBump);
+    for (const total of [counters.totalDeposited, counters.totalRefunded, counters.totalReimbursed, counters.totalSharesMinted]) {
+      assert.equal(total.toString(), "0");
+    }
     const fetched = await program.account.config.fetch(config, "finalized");
     for (const [field, expectedValue] of Object.entries(args)) {
       const actual = (fetched as Record<string, unknown>)[field];
@@ -328,12 +365,13 @@ test("actual SBF one-time initialization", { timeout: 850_000 }, async (t) => {
     assert.equal(unpackAccount(reimbursement, cashInfo).amount, 10_000_000n);
     assert.deepEqual(await state(), before);
     preservedConfig = Buffer.from(account.data);
+    preservedAccounting = Buffer.from(ledger.data);
     preservedTokens = await state();
     evidence.push({ name: "successful initialization", signature, error: null });
   });
   await t.test("reject identical initialization replay without overwriting", () => rejected("identical reinitialization", "already in use", {}, {}, authority, false, true));
   await t.test("reject changed initialization replay without overwriting", () => rejected("changed reinitialization", "already in use", { market: bytes(32, 0x77) }, {}, authority, false, true));
-  await t.test("remove upgrade authority with genuine local loader CLI and preserve Config", async () => {
+  await t.test("remove upgrade authority with genuine local loader CLI and preserve Config and Accounting", async () => {
     const result = await promisify(execFile)("solana", [
       "--config", join(runtime, "solana.yml"), "--url", connection.rpcEndpoint,
       "--keypair", authorityPath, "--commitment", "finalized",
@@ -350,10 +388,14 @@ test("actual SBF one-time initialization", { timeout: 850_000 }, async (t) => {
     assert.ok(account.owner.equals(programId));
     assert.deepEqual(account.data, preservedConfig);
     await program.account.config.fetch(config, "finalized");
+    const ledger = await connection.getAccountInfo(accounting, "finalized"); assert.ok(ledger);
+    assert.ok(ledger.owner.equals(programId)); assert.deepEqual(ledger.data, preservedAccounting);
+    await program.account.accounting.fetch(accounting, "finalized");
     assert.deepEqual(await state(), preservedTokens);
     // Existing Config would mask the missing-authority branch on another initialize.
     writeFileSync(join(runtime, "evidence.json"), JSON.stringify({ programId: programId.toBase58(),
-      config: config.toBase58(), configSpace: 580, upgradeAuthority: null,
+      config: config.toBase58(), configSpace: 580, accounting: accounting.toBase58(), accountingSpace: 105,
+      totalDeposited: "0", totalRefunded: "0", totalReimbursed: "0", totalSharesMinted: "0", upgradeAuthority: null,
       rejectedTransactions: evidence.filter((entry) => entry.error !== null).length, transactions: evidence,
     }, null, 2) + "\n");
   });
