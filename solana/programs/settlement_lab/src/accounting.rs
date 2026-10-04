@@ -34,6 +34,13 @@ pub enum AccountingError {
     PayoutsExceedDeposits,
 }
 
+/// Fill accounting failures, independent of Anchor custom error numbering.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FillAccountingError {
+    Accounting(AccountingError),
+    InvalidFilledQuantity { expected: u64, actual: u64 },
+}
+
 impl Accounting {
     /// Return order-attributable outstanding cash without changing any field.
     /// Overflow in the payout sum is distinct from payouts exceeding deposits.
@@ -63,6 +70,62 @@ impl Accounting {
             .checked_add(u128::from(cash_amount))
             .ok_or(AccountingError::ArithmeticOverflow)?;
         self.total_deposited = successor;
+        Ok(())
+    }
+
+    /// Record one fill's reimbursement and cumulative YES issuance in base units.
+    /// Every failure preserves the entire record; success changes only those
+    /// two counters. This helper performs checked accounting arithmetic only.
+    ///
+    /// The caller must validate the configured operator, account bindings,
+    /// immutable terms, and Filled receipt, including the order's minimum shares.
+    /// Invoke this helper only for a newly accepted fill; replay must bypass it
+    /// entirely. The helper itself does not deduplicate calls or accept receipts,
+    /// mint tokens, transfer cash, authenticate accounts, or advance an Order.
+    /// Actual settlement must atomically combine these counter updates with SPL
+    /// minting, reimbursement, and persistent terminal Order state.
+    /// Cumulative issuance is not current mint supply and must not decrease
+    /// after user burns.
+    pub fn record_fill(
+        &mut self,
+        cash_amount: u64,
+        filled_quantity: u64,
+    ) -> std::result::Result<(), FillAccountingError> {
+        let expected = validate_amounts(cash_amount, 1)
+            .map_err(AccountingError::InvalidAmount)
+            .map_err(FillAccountingError::Accounting)?;
+        if filled_quantity != expected {
+            return Err(FillAccountingError::InvalidFilledQuantity {
+                expected,
+                actual: filled_quantity,
+            });
+        }
+
+        self.outstanding_cash()
+            .map_err(FillAccountingError::Accounting)?;
+        let reimbursed = self
+            .total_reimbursed
+            .checked_add(u128::from(cash_amount))
+            .ok_or(AccountingError::ArithmeticOverflow)
+            .map_err(FillAccountingError::Accounting)?;
+        let payouts = self
+            .total_refunded
+            .checked_add(reimbursed)
+            .ok_or(AccountingError::ArithmeticOverflow)
+            .map_err(FillAccountingError::Accounting)?;
+        if payouts > self.total_deposited {
+            return Err(FillAccountingError::Accounting(
+                AccountingError::PayoutsExceedDeposits,
+            ));
+        }
+        let shares_minted = self
+            .total_shares_minted
+            .checked_add(u128::from(filled_quantity))
+            .ok_or(AccountingError::ArithmeticOverflow)
+            .map_err(FillAccountingError::Accounting)?;
+
+        self.total_reimbursed = reimbursed;
+        self.total_shares_minted = shares_minted;
         Ok(())
     }
 }

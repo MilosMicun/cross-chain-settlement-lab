@@ -3,7 +3,7 @@ use anchor_lang::{
     AccountDeserialize, AccountSerialize, Discriminator,
 };
 use settlement_lab::{
-    accounting::{Accounting, AccountingError},
+    accounting::{Accounting, AccountingError, FillAccountingError},
     order_state::ValidationError,
 };
 
@@ -293,5 +293,352 @@ fn outstanding_cash_never_mutates_successful_or_invalid_records() {
         let before = bytes(&account);
         assert_eq!(account.outstanding_cash(), expected);
         assert_eq!(bytes(&account), before);
+    }
+}
+
+fn fill_rejects_unchanged(
+    mut account: Accounting,
+    cash: u64,
+    quantity: u64,
+    expected: FillAccountingError,
+) {
+    let before = bytes(&account);
+    assert_eq!(account.record_fill(cash, quantity), Err(expected));
+    assert_eq!(bytes(&account), before);
+}
+
+fn fill_succeeds_as(account: &mut Accounting, cash: u64, quantity: u64, expected: Accounting) {
+    assert_eq!(account.record_fill(cash, quantity), Ok(()));
+    assert_eq!(*account, expected);
+    assert_eq!(bytes(account), bytes(&expected));
+}
+
+#[test]
+fn successful_fill_changes_only_reimbursement_and_issuance() {
+    let mut account = fixture();
+    fill_succeeds_as(
+        &mut account,
+        7,
+        14,
+        Accounting {
+            total_reimbursed: 37,
+            total_shares_minted: 74,
+            ..fixture()
+        },
+    );
+    assert_eq!(account.outstanding_cash(), Ok(43));
+}
+
+#[test]
+fn smallest_fill_uses_exact_integer_base_units() {
+    fill_succeeds_as(
+        &mut fixture(),
+        1,
+        2,
+        Accounting {
+            total_reimbursed: 31,
+            total_shares_minted: 62,
+            ..fixture()
+        },
+    );
+}
+
+// Large u128 starting counters below are artificial host arithmetic fixtures,
+// not demonstrated token flows or validator scenarios. They impose no global
+// shares-to-reimbursement relationship beyond the new fill's exact quantity.
+#[test]
+fn largest_valid_fill_has_exact_output() {
+    let mut account = Accounting {
+        total_deposited: 9_223_372_036_854_775_857,
+        ..fixture()
+    };
+    let expected = Accounting {
+        total_deposited: 9_223_372_036_854_775_857,
+        total_reimbursed: 9_223_372_036_854_775_837,
+        total_shares_minted: 18_446_744_073_709_551_674,
+        ..fixture()
+    };
+    fill_succeeds_as(
+        &mut account,
+        MAX_ORDER_CASH,
+        18_446_744_073_709_551_614,
+        expected,
+    );
+    assert_eq!(account.outstanding_cash(), Ok(0));
+}
+
+#[test]
+fn zero_and_oversized_fill_cash_reject_unchanged() {
+    fill_rejects_unchanged(
+        fixture(),
+        0,
+        0,
+        FillAccountingError::Accounting(AccountingError::InvalidAmount(ValidationError::ZeroCash)),
+    );
+    for cash in [MAX_ORDER_CASH + 1, u64::MAX] {
+        fill_rejects_unchanged(
+            fixture(),
+            cash,
+            u64::MAX,
+            FillAccountingError::Accounting(AccountingError::InvalidAmount(
+                ValidationError::CashTooLarge,
+            )),
+        );
+    }
+}
+
+#[test]
+fn incorrect_fill_quantities_reject_unchanged() {
+    for (cash, expected, quantities) in [
+        (7, 14, [0, 13, 15, u64::MAX]),
+        (
+            MAX_ORDER_CASH,
+            18_446_744_073_709_551_614,
+            [0, 1, 18_446_744_073_709_551_613, u64::MAX],
+        ),
+    ] {
+        for actual in quantities {
+            fill_rejects_unchanged(
+                Accounting {
+                    total_deposited: u128::MAX,
+                    ..fixture()
+                },
+                cash,
+                actual,
+                FillAccountingError::InvalidFilledQuantity { expected, actual },
+            );
+        }
+    }
+}
+
+#[test]
+fn fill_exactly_exhausts_outstanding_cash() {
+    let mut account = fixture();
+    fill_succeeds_as(
+        &mut account,
+        50,
+        100,
+        Accounting {
+            total_reimbursed: 80,
+            total_shares_minted: 160,
+            ..fixture()
+        },
+    );
+    assert_eq!(account.outstanding_cash(), Ok(0));
+}
+
+#[test]
+fn fill_payout_exceeding_deposits_by_one_rejects_before_shares_overflow() {
+    fill_rejects_unchanged(
+        Accounting {
+            total_shares_minted: u128::MAX,
+            ..fixture()
+        },
+        51,
+        102,
+        FillAccountingError::Accounting(AccountingError::PayoutsExceedDeposits),
+    );
+}
+
+#[test]
+fn fill_payout_limit_includes_existing_refunds_and_reimbursements() {
+    for (refunded, reimbursed) in [(50, 0), (0, 50), (20, 30)] {
+        fill_rejects_unchanged(
+            Accounting {
+                total_refunded: refunded,
+                total_reimbursed: reimbursed,
+                ..fixture()
+            },
+            51,
+            102,
+            FillAccountingError::Accounting(AccountingError::PayoutsExceedDeposits),
+        );
+    }
+}
+
+#[test]
+fn fill_rejects_existing_payout_sum_overflow_unchanged() {
+    fill_rejects_unchanged(
+        Accounting {
+            total_deposited: u128::MAX,
+            total_refunded: u128::MAX,
+            total_reimbursed: 1,
+            ..fixture()
+        },
+        1,
+        2,
+        FillAccountingError::Accounting(AccountingError::ArithmeticOverflow),
+    );
+}
+
+#[test]
+fn fill_rejects_existing_payouts_exceeding_deposits_unchanged() {
+    for (refunded, reimbursed) in [(101, 0), (0, 101), (51, 50)] {
+        fill_rejects_unchanged(
+            Accounting {
+                total_refunded: refunded,
+                total_reimbursed: reimbursed,
+                total_shares_minted: u128::MAX,
+                ..fixture()
+            },
+            1,
+            2,
+            FillAccountingError::Accounting(AccountingError::PayoutsExceedDeposits),
+        );
+    }
+}
+
+#[test]
+fn fill_candidate_reimbursement_overflow_preserves_record() {
+    fill_rejects_unchanged(
+        Accounting {
+            total_deposited: u128::MAX,
+            total_refunded: 0,
+            total_reimbursed: u128::MAX,
+            ..fixture()
+        },
+        1,
+        2,
+        FillAccountingError::Accounting(AccountingError::ArithmeticOverflow),
+    );
+}
+
+#[test]
+fn fill_candidate_combined_payout_overflows_with_reimbursement_capacity() {
+    fill_rejects_unchanged(
+        Accounting {
+            total_deposited: u128::MAX,
+            total_refunded: u128::MAX - 31,
+            total_reimbursed: 30,
+            ..fixture()
+        },
+        2,
+        4,
+        FillAccountingError::Accounting(AccountingError::ArithmeticOverflow),
+    );
+}
+
+#[test]
+fn fill_shares_overflow_preserves_both_counters_after_valid_cash_checks() {
+    fill_rejects_unchanged(
+        Accounting {
+            total_shares_minted: u128::MAX - 13,
+            ..fixture()
+        },
+        7,
+        14,
+        FillAccountingError::Accounting(AccountingError::ArithmeticOverflow),
+    );
+}
+
+#[test]
+fn fill_accepts_exact_u128_counter_and_payout_boundaries() {
+    for (cash, quantity) in [(1, 2), (MAX_ORDER_CASH, 18_446_744_073_709_551_614)] {
+        for refunded in [0, 1] {
+            let mut account = Accounting {
+                total_deposited: u128::MAX,
+                total_refunded: refunded,
+                total_reimbursed: u128::MAX - refunded - u128::from(cash),
+                total_shares_minted: u128::MAX - u128::from(quantity),
+                ..fixture()
+            };
+            let expected = Accounting {
+                total_deposited: u128::MAX,
+                total_refunded: refunded,
+                total_reimbursed: u128::MAX - refunded,
+                total_shares_minted: u128::MAX,
+                ..fixture()
+            };
+            fill_succeeds_as(&mut account, cash, quantity, expected);
+            assert_eq!(account.outstanding_cash(), Ok(0));
+        }
+    }
+}
+
+#[test]
+fn cumulative_fills_cross_u64_boundaries_without_losing_precision() {
+    let mut account = Accounting {
+        total_deposited: 27_670_116_110_564_327_421,
+        total_refunded: 0,
+        total_reimbursed: 0,
+        total_shares_minted: 0,
+        ..fixture()
+    };
+    for (reimbursed, shares, outstanding) in [
+        (
+            9_223_372_036_854_775_807,
+            18_446_744_073_709_551_614,
+            18_446_744_073_709_551_614,
+        ),
+        (
+            18_446_744_073_709_551_614,
+            36_893_488_147_419_103_228,
+            9_223_372_036_854_775_807,
+        ),
+        (27_670_116_110_564_327_421, 55_340_232_221_128_654_842, 0),
+    ] {
+        let expected = Accounting {
+            total_deposited: 27_670_116_110_564_327_421,
+            total_refunded: 0,
+            total_reimbursed: reimbursed,
+            total_shares_minted: shares,
+            ..fixture()
+        };
+        fill_succeeds_as(
+            &mut account,
+            MAX_ORDER_CASH,
+            18_446_744_073_709_551_614,
+            expected,
+        );
+        assert_eq!(account.outstanding_cash(), Ok(outstanding));
+    }
+    assert!(account.total_reimbursed > u128::from(u64::MAX));
+    assert!(account.total_shares_minted > u128::from(u64::MAX));
+    let serialized = bytes(&account);
+    assert_eq!(
+        Accounting::try_deserialize(&mut serialized.as_slice()).unwrap(),
+        account
+    );
+}
+
+#[test]
+fn fill_validates_cash_then_quantity_before_existing_accounting() {
+    let account = Accounting {
+        total_deposited: 0,
+        total_refunded: u128::MAX,
+        total_reimbursed: 1,
+        total_shares_minted: u128::MAX,
+        ..fixture()
+    };
+    for (cash, quantity, error) in [
+        (
+            0,
+            0,
+            FillAccountingError::Accounting(AccountingError::InvalidAmount(
+                ValidationError::ZeroCash,
+            )),
+        ),
+        (
+            u64::MAX,
+            0,
+            FillAccountingError::Accounting(AccountingError::InvalidAmount(
+                ValidationError::CashTooLarge,
+            )),
+        ),
+        (
+            1,
+            0,
+            FillAccountingError::InvalidFilledQuantity {
+                expected: 2,
+                actual: 0,
+            },
+        ),
+        (
+            1,
+            2,
+            FillAccountingError::Accounting(AccountingError::ArithmeticOverflow),
+        ),
+    ] {
+        fill_rejects_unchanged(account.clone(), cash, quantity, error);
     }
 }
