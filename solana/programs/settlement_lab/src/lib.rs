@@ -1,6 +1,7 @@
 use anchor_lang::prelude::*;
 
 pub mod accounting;
+pub mod cancelled_receipt;
 pub mod configuration;
 pub mod filled_receipt;
 pub mod filled_settlement;
