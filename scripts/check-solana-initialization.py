@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Run explicit initialization, orders, cancellation, or Filled suites on one disposable validator."""
+"""Run isolated suites, including the two-ledger Filled rollback fixture."""
 
+import base64
 import json
 import os
 from pathlib import Path
@@ -14,10 +15,12 @@ import urllib.error
 import urllib.request
 
 arguments = sys.argv[1:]
-if arguments not in ([], ["--orders"], ["--cancellation"], ["--filled"], ["--isolated-network"],
-                     ["--isolated-network", "--orders"], ["--isolated-network", "--cancellation"], ["--isolated-network", "--filled"]):
+if arguments not in ([], ["--orders"], ["--cancellation"], ["--filled"], ["--filled-rollback"], ["--isolated-network"],
+                     ["--isolated-network", "--orders"], ["--isolated-network", "--cancellation"], ["--isolated-network", "--filled"],
+                     ["--isolated-network", "--filled-rollback"]):
     raise SystemExit("Unexpected runner arguments")
 filled_mode = "--filled" in arguments
+rollback_mode = "--filled-rollback" in arguments
 cancellation_mode = "--cancellation" in arguments or filled_mode
 orders_mode = "--orders" in arguments or cancellation_mode
 
@@ -88,6 +91,50 @@ def public_key(path):
     ).strip()
 
 
+def stop_owned(process):
+    # Each process owns its session, including any surviving descendants.
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGKILL)
+        process.wait(timeout=5)
+
+
+def released_ports():
+    deadline = time.monotonic() + 10
+    while True:
+        try:
+            check_ports()
+            break
+        except OSError:
+            if time.monotonic() >= deadline:
+                raise RuntimeError("Owned validator ports were not released after cleanup")
+            time.sleep(0.2)
+    print("PASS: all owned validator TCP/UDP ports released", flush=True)
+
+
+def ready(validator):
+    deadline = time.monotonic() + 60
+    last_error = "not attempted"
+    while time.monotonic() < deadline:
+        if validator.poll() is not None:
+            raise RuntimeError(f"Validator exited: {validator.returncode}")
+        try:
+            if rpc("getHealth") == "ok":
+                break
+        except (OSError, ValueError, urllib.error.URLError, RuntimeError) as error:
+            last_error = str(error)
+        time.sleep(0.5)
+    else:
+        raise RuntimeError(f"Validator readiness timeout: {last_error}")
+    version = rpc("getVersion")
+    assert version["solana-core"] == "4.1.2", version
+
+
 def interrupted(signum, _frame):
     raise RuntimeError(f"Interrupted by signal {signum}")
 
@@ -103,7 +150,7 @@ if "--isolated-network" not in arguments:
     os.environ["INITIALIZATION_PARENT_NET"] = os.readlink("/proc/self/ns/net")
     os.execvp("unshare", [
         "unshare", "--user", "--map-root-user", "--net", "--",
-        "python3", str(Path(__file__).resolve()), "--isolated-network", *(["--filled"] if filled_mode else ["--cancellation"] if cancellation_mode else ["--orders"] if orders_mode else []),
+        "python3", str(Path(__file__).resolve()), "--isolated-network", *(["--filled-rollback"] if rollback_mode else ["--filled"] if filled_mode else ["--cancellation"] if cancellation_mode else ["--orders"] if orders_mode else []),
     ])
 if os.readlink("/proc/self/ns/net") == os.environ.get("INITIALIZATION_PARENT_NET"):
     raise SystemExit("The initialization runner requires its own network namespace")
@@ -134,27 +181,15 @@ try:
         "--upgradeable-program", program_id, str(binary), authority,
         "--upgradeable-program", unrelated, str(binary), authority,
     ], "validator")
-    deadline = time.monotonic() + 60
-    last_error = "not attempted"
-    while time.monotonic() < deadline:
-        if validator.poll() is not None:
-            raise RuntimeError(f"Validator exited: {validator.returncode}")
-        try:
-            if rpc("getHealth") == "ok":
-                break
-        except (OSError, ValueError, urllib.error.URLError, RuntimeError) as error:
-            last_error = str(error)
-        time.sleep(0.5)
-    else:
-        raise RuntimeError(f"Validator readiness timeout: {last_error}")
-    version = rpc("getVersion")
-    assert version["solana-core"] == "4.1.2", version
+    ready(validator)
     print(f"Ready: isolated upgradeable SBF fixture; diagnostics: {runtime.relative_to(root)}", flush=True)
     env = os.environ.copy()
     env.update({
         "INITIALIZATION_RUNTIME": str(runtime),
         "INITIALIZATION_UNRELATED_PROGRAM": unrelated,
     })
+    # The runner owns phase selection; callers cannot select arbitrary snapshots.
+    env.pop("FILLED_ROLLBACK_PHASE", None)
     suites = [("initialization", "test:initialization")]
     if orders_mode:
         suites.append(("orders", "test:orders"))
@@ -162,7 +197,7 @@ try:
         suites.append(("cancellation", "test:cancellation"))
     if filled_mode:
         suites.append(("filled", "test:filled"))
-    for name, npm_script in suites:
+    def run_suite(name, npm_script):
         tests = start(["npm", "--prefix", "harness", "run", npm_script], "tests" if name == "initialization" else name, env)
         deadline = time.monotonic() + 900
         while tests.poll() is None and time.monotonic() < deadline:
@@ -175,30 +210,115 @@ try:
         if tests.returncode != 0:
             raise RuntimeError(f"{name} tests failed: {tests.returncode}")
 
+    for name, npm_script in suites:
+        run_suite(name, npm_script)
+
+    if rollback_mode:
+        env["FILLED_ROLLBACK_PHASE"] = "prepare"
+        run_suite("filled-rollback-prepare", "test:filled-rollback:prepare")
+        manifest = json.loads((runtime / "rollback-manifest.json").read_text())
+        original_dir = runtime / "rollback-original"
+        altered_dir = runtime / "rollback-altered"
+        original_dir.mkdir()
+        altered_dir.mkdir()
+        originals = {}
+        altered = {}
+        for address in manifest["keys"]:
+            # CLI JSON is the pinned validator's supported account-dump format;
+            # Python preserves exact u64 metadata (including rentEpoch).
+            dump = json.loads(subprocess.check_output([
+                "solana", "--config", str(config), "--commitment", "finalized",
+                "account", address, "--output", "json",
+            ], text=True, timeout=30))
+            assert dump["pubkey"] == address
+            assert dump["account"]["data"][1] == "base64"
+            originals[address] = dump
+            (original_dir / f"{address}.json").write_text(json.dumps(dump) + "\n")
+            copy = json.loads(json.dumps(dump))
+            data = bytearray(base64.b64decode(copy["account"]["data"][0], validate=True))
+            if address in (manifest["escrow"], manifest["cashMint"]):
+                offset = 64 if address == manifest["escrow"] else 36
+                value = int.from_bytes(data[offset:offset + 8], "little")
+                if address == manifest["escrow"]:
+                    assert value == 10_000_000
+                assert value > 0
+                data[offset:offset + 8] = (value - 1).to_bytes(8, "little")
+                copy["account"]["data"][0] = base64.b64encode(data).decode()
+            altered[address] = copy
+            (altered_dir / f"{address}.json").write_text(json.dumps(copy) + "\n")
+
+        changed = [address for address in originals if originals[address] != altered[address]]
+        assert set(changed) == {manifest["escrow"], manifest["cashMint"]}
+        changes = []
+        for address in changed:
+            before = originals[address]
+            after = altered[address]
+            offset = 64 if address == manifest["escrow"] else 36
+            original_bytes = base64.b64decode(before["account"]["data"][0])
+            altered_bytes = base64.b64decode(after["account"]["data"][0])
+            expected = bytearray(original_bytes)
+            value = int.from_bytes(original_bytes[offset:offset + 8], "little")
+            expected[offset:offset + 8] = (value - 1).to_bytes(8, "little")
+            assert altered_bytes == expected
+            restored_dump = json.loads(json.dumps(after))
+            restored_dump["account"]["data"] = before["account"]["data"]
+            assert restored_dump == before, "No other account field may change"
+            changes.append({"address": address, "offset": offset, "original": str(value), "altered": str(value - 1)})
+        for dumps in (originals, altered):
+            for mint in (manifest["cashMint"], manifest["yesMint"]):
+                # Decode the public key locally without another dependency.
+                number = 0
+                alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+                for character in mint:
+                    number = number * 58 + alphabet.index(character)
+                mint_key_bytes = number.to_bytes(32, "big")
+                total = 0
+                for dump in dumps.values():
+                    data = base64.b64decode(dump["account"]["data"][0])
+                    if dump["account"]["owner"] == "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" and len(data) == 165:
+                        if data[:32] == mint_key_bytes:
+                            total += int.from_bytes(data[64:72], "little")
+                supply = int.from_bytes(base64.b64decode(dumps[mint]["account"]["data"][0])[36:44], "little")
+                assert total == supply, "All exported token balances must reconcile with supply"
+        evidence_path = runtime / "filled-rollback-evidence.json"
+        evidence = json.loads(evidence_path.read_text())
+        evidence["genesisAlterations"] = changes
+        evidence["dumpFormat"] = "Pinned solana account --output json; exact u64 metadata preserved"
+        evidence_path.write_text(json.dumps(evidence, indent=2) + "\n")
+        print("PASS: retained original dumps; altered only escrow amount and cash supply by one unit; both mints conserve balances", flush=True)
+        for process in reversed(processes):
+            stop_owned(process)
+        processes.clear()
+        released_ports()
+        ledger = runtime / "rollback-ledger"
+        assert not ledger.exists(), "Genesis loading requires a genuinely new ledger"
+        # The default genesis faucet uses the CLI keypair and would overwrite
+        # the exported cash-authority SOL balance. Use an unrelated identity.
+        rollback_faucet = public_key(runtime / "rollback-genesis-faucet.json")
+        assert rollback_faucet not in manifest["keys"]
+        command = [
+            "solana-test-validator", "--quiet", "--config", str(config),
+            "--ledger", str(ledger), "--bind-address", "127.0.0.1",
+            "--rpc-port", "18899", "--faucet-port", "18901", "--gossip-port", "19010",
+            "--dynamic-port-range", "19011-19040", "--ticks-per-slot", "8",
+            "--mint", rollback_faucet,
+            "--limit-ledger-size", "10000", "--deactivate-feature", disable_legacy_deployment_feature,
+        ]
+        for address in manifest["keys"]:
+            command.extend(["--account", address, str(altered_dir / f"{address}.json")])
+        validator = start(command, "rollback-validator")
+        ready(validator)
+        print("Ready: second fresh ledger loaded immutable executable/ProgramData snapshots", flush=True)
+        env["FILLED_ROLLBACK_PHASE"] = "verify"
+        run_suite("filled-rollback-verify", "test:filled-rollback:verify")
+
 finally:
     # Each process has its own session; terminate its descendants as well as its leader.
     for process in reversed(processes):
-        try:
-            os.killpg(process.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-        try:
-            process.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            os.killpg(process.pid, signal.SIGKILL)
-            process.wait(timeout=5)
+        stop_owned(process)
     for handle in handles:
         handle.close()
     print(f"Owned processes stopped; diagnostics preserved in {runtime.relative_to(root)}", flush=True)
     # Do not check/release anyone else's ports if the initial occupancy check failed.
     if processes:
-        deadline = time.monotonic() + 10
-        while True:
-            try:
-                check_ports()
-                break
-            except OSError:
-                if time.monotonic() >= deadline:
-                    raise RuntimeError("Owned validator ports were not released after cleanup")
-                time.sleep(0.2)
-        print("PASS: all owned validator TCP/UDP ports released", flush=True)
+        released_ports()

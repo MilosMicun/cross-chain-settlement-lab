@@ -639,3 +639,124 @@ LTO limitation, bigint JavaScript fallback, and sandboxed Foundry signature-cach
 write failure. Socket/namespace access required running the isolated validator
 outside the filesystem sandbox. EVM execution/finality, Cancelled/refund,
 transport/cross-chain behavior, and second-CPI failure remain unverified here.
+
+## Filled reimbursement failure after successful mint
+
+```bash
+source scripts/env.sh
+(cd solana && cargo check --workspace --locked)
+(cd solana && cargo fmt --all -- --check)
+(cd solana && cargo test --workspace --locked)
+(cd solana && anchor build --ignore-keys --tools-version v1.54 --arch v0)
+npm --prefix harness run typecheck
+npm --prefix harness run check:imports
+bash scripts/check-solana-filled-rollback.sh
+bash scripts/check-solana-filled.sh
+git diff --check
+```
+
+The rollback wrapper selects explicit `--filled-rollback` mode in the existing
+isolated runner. It runs initialization, including genuine upgrade-authority
+removal, then the new test's runner-selected `prepare` phase. A genuine user
+deposits 10,000,000 cash units with a minimum of 20,000,000 YES units and requests
+cancellation. Preparation checks CancelRequested, retained cancellation history,
+no accepted receipt, exact deposit/accounting, zero YES issuance, and the permanent
+nonce. All transactions are finalized before account export. Fixture credentials
+are stored with mode 0600 only in the ignored per-run `.runtime` directory.
+
+The runner exports the pinned CLI's JSON account-dump format, preserving exact
+u64 metadata, to `rollback-original`. It includes Config, Accounting, UserNonce,
+Order, both mints, every legacy token account for those mints, the required system
+accounts, the executable program, and its linked immutable ProgramData. Separate
+`rollback-altered` dumps differ only in the escrow token amount at offset 64
+(10,000,000 to 9,999,999) and cash mint supply at offset 36 (one unit less).
+All other bytes and account fields remain identical. Both original and altered
+cash/YES supplies reconcile against all exported token balances.
+
+This deliberately induced local token-account deficit is isolated genesis fault
+injection. It is not a reachable normal protocol flow or evidence that users can
+drain escrow. There is no runtime storage rewrite, production repair hook, or
+change to the program or its authorities. After stopping the first validator and
+checking port release, the runner creates a genuinely new ledger and loads the
+altered dumps with `--account`. It loads the executable and ProgramData directly,
+without redeployment. A new Node process discards the old ledger's slots and
+blockhashes. The second genesis faucet uses a separate local identity because
+the validator's default faucet would replenish the CLI keypair's exported SOL
+balance. The `verify` phase compares loaded snapshots, checks account/PDA
+bindings and mint capacity, verifies exact compiled SBF bytes and absent upgrade
+authority, and excludes the separate fee payer from tracked protocol accounts.
+
+The configured operator submits unchanged full Filled terms and receipt, without
+the original user's signature, using `skipPreflight`. The test requires actual
+finalized transaction metadata: exactly two ordered legacy token CPIs, authenticated
+by their instruction bytes, account order, amounts, and six decimals. The first
+MintToChecked must return success; the subsequent TransferChecked must return SPL
+insufficient-funds error 1, propagated by the settlement program. No third CPI or
+terminal event is allowed. Complete before/after snapshots include exact u64 lamports
+(preserved as decimal strings before JSON parsing, including the large genesis balance),
+ownership, executable flags and data for every tracked account, proving that
+Order, cancellation history, nonce, Accounting, YES supply/balance and cash
+balances all roll back. Transaction fees affect only the separate fee payer.
+
+A genuine authorized legacy SPL cash MintTo restores one unit to the canonical
+escrow. The test requires restoration of the original tracked snapshot and token
+conservation, without changing source state or counters. This restores the test
+fixture; it is not a production recovery mechanism. The identical receipt then
+settles once, with exactly one mint and reimbursement, the independently encoded
+receipt/hash, retained cancellation history, and exact counter/balance changes.
+Exact replay must preserve every tracked byte and have no CPI or event.
+
+Public evidence is saved as `filled-rollback-evidence.json` under the runner's
+unique ignored `.runtime/initialization-*` directory. It records ledger/phase
+labels, program identity, artifact SHA-256, genesis alterations, finalized
+signatures/slots/errors, both CPI identities and logs, complete rollback snapshots,
+restoration, retry, and replay. It contains no private credentials. Existing runner
+modes retain their suite selection, deadlines, loopback isolation and process/port
+cleanup. These checks concern local Solana atomic rollback only; EVM execution,
+cross-chain behavior, honest operator attestations and production bridge safety
+are not established.
+
+Verified on 2026-10-04: a fresh two-ledger run passed 50 initialization, four
+preparation, and six verification Node tests (60 total, including parents), with
+no failures, skips or cancellations. Cash supply changed from 20,000,000 to
+19,999,999 alongside the escrow change from 10,000,000 to 9,999,999, preserving
+aggregate token conservation. On the second ledger, the finalized rejection at
+slot 25 authenticated CPI bytes `0e002d31010000000006` (MintToChecked,
+20,000,000 YES, six decimals) followed by `0c809698000000000006`
+(TransferChecked, 10,000,000 cash, six decimals). Logs show the mint returning
+success before the transfer reports insufficient funds; final error is
+`InstructionError: [0, {Custom: 1}]`. No terminal event appeared and all 19
+tracked account snapshots were preserved, including cancellation history and
+exact u64 lamport balances.
+
+Authorized fixture restoration finalized at slot 59 and restored the original
+tracked snapshot. The same Filled receipt settled at slot 94 with two successful
+CPIs and one event, 10,000,000 reimbursed and 20,000,000 cumulatively issued.
+Replay at slot 129 had zero CPI/events and preserved the complete snapshot.
+Public signatures, CPI accounts/bytes, logs, fixture changes, and artifact
+fingerprint remain in ignored
+`.runtime/initialization-w1rovxfv/filled-rollback-evidence.json`. The immutable
+compiled artifact SHA-256 is
+`f44c4770414dbec009e2d9f4a668d86e50c94b8f9c1348c86321fb838c38a9f3`.
+Both owned validators and test process groups stopped and their reserved TCP/UDP
+ports were released. This closes the second-CPI rollback gap in the preceding
+historical Filled result; the EVM/cross-chain limitations remain.
+
+An initial run correctly rejected a loaded snapshot whose cash-authority SOL
+balance had been overwritten by the default genesis faucet. Explicitly selecting
+a separate faucet fixed fixture loading without weakening snapshot assertions;
+the successful run used a new fixture and new ledgers. The existing nonfatal
+bigint native-binding warning uses the JavaScript fallback. Socket/namespace
+access required executing the isolated runners outside the filesystem sandbox.
+
+The unchanged full Filled runner also passed on a fresh validator: 50
+initialization, 54 creation, 28 cancellation and 35 Filled Node tests (167 total),
+without failures, skips or cancellations. Its evidence remains under ignored
+`.runtime/initialization-ifilyfmm/`; owned processes stopped and ports were
+released. Locked workspace check, formatting, all 90 Rust tests, the pinned
+Anchor build, TypeScript typecheck/import checks and whitespace checks passed.
+SHA-256 comparisons against the starting fixture confirm unchanged complete IDL,
+generated types, SBF artifact, dependency lockfiles, Rust source and existing test
+suites. Only the five task-authorized files changed; staging remains empty and
+HEAD remains `4adbcc1`. No stage, commit, remote configuration or publication was
+performed.
