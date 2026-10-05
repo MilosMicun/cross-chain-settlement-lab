@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run isolated suites, including the two-ledger Filled rollback fixture."""
+"""Run isolated suites, including Cancelled and two-ledger Filled rollback."""
 
 import base64
 import json
@@ -15,10 +15,11 @@ import urllib.error
 import urllib.request
 
 arguments = sys.argv[1:]
-if arguments not in ([], ["--orders"], ["--cancellation"], ["--filled"], ["--filled-rollback"], ["--isolated-network"],
+if arguments not in ([], ["--orders"], ["--cancellation"], ["--filled"], ["--filled-rollback"], ["--cancelled"], ["--isolated-network"],
                      ["--isolated-network", "--orders"], ["--isolated-network", "--cancellation"], ["--isolated-network", "--filled"],
-                     ["--isolated-network", "--filled-rollback"]):
+                     ["--isolated-network", "--filled-rollback"], ["--isolated-network", "--cancelled"]):
     raise SystemExit("Unexpected runner arguments")
+cancelled_mode = "--cancelled" in arguments
 filled_mode = "--filled" in arguments
 rollback_mode = "--filled-rollback" in arguments
 cancellation_mode = "--cancellation" in arguments or filled_mode
@@ -35,8 +36,8 @@ idl_types = root / "solana/target/types/settlement_lab.ts"
 if not binary.is_file() or binary.stat().st_size == 0 or not idl_path.is_file() or not idl_types.is_file():
     raise SystemExit("Build the SBF program and IDL before running this check")
 idl = json.loads(idl_path.read_text())
-if idl["address"] != program_id or sorted(ix["name"] for ix in idl["instructions"]) != ["accept_filled", "create_order", "initialize", "request_cancel"]:
-    raise SystemExit("Expected the unchanged program ID and exactly initialize, create_order, request_cancel, and accept_filled in the IDL")
+if idl["address"] != program_id or sorted(ix["name"] for ix in idl["instructions"]) != ["accept_cancelled", "accept_filled", "create_order", "initialize", "request_cancel"]:
+    raise SystemExit("Expected the unchanged program ID and exactly initialize, create_order, request_cancel, accept_filled, and accept_cancelled in the IDL")
 
 ports = [18899, 18900, 18901, *range(19010, 19041)]
 http = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -150,7 +151,7 @@ if "--isolated-network" not in arguments:
     os.environ["INITIALIZATION_PARENT_NET"] = os.readlink("/proc/self/ns/net")
     os.execvp("unshare", [
         "unshare", "--user", "--map-root-user", "--net", "--",
-        "python3", str(Path(__file__).resolve()), "--isolated-network", *(["--filled-rollback"] if rollback_mode else ["--filled"] if filled_mode else ["--cancellation"] if cancellation_mode else ["--orders"] if orders_mode else []),
+        "python3", str(Path(__file__).resolve()), "--isolated-network", *(["--cancelled"] if cancelled_mode else ["--filled-rollback"] if rollback_mode else ["--filled"] if filled_mode else ["--cancellation"] if cancellation_mode else ["--orders"] if orders_mode else []),
     ])
 if os.readlink("/proc/self/ns/net") == os.environ.get("INITIALIZATION_PARENT_NET"):
     raise SystemExit("The initialization runner requires its own network namespace")
@@ -197,6 +198,8 @@ try:
         suites.append(("cancellation", "test:cancellation"))
     if filled_mode:
         suites.append(("filled", "test:filled"))
+    if cancelled_mode:
+        suites.append(("cancelled", "test:cancelled"))
     def run_suite(name, npm_script):
         tests = start(["npm", "--prefix", "harness", "run", npm_script], "tests" if name == "initialization" else name, env)
         deadline = time.monotonic() + 900

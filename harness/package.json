@@ -14,6 +14,7 @@
     "test:initialization": "node --test --test-concurrency=1 src/tests/initialization.test.ts",
     "test:orders": "node --test --test-concurrency=1 src/tests/order-creation.test.ts",
     "test:cancellation": "node --test --test-concurrency=1 src/tests/order-cancellation.test.ts",
+    "test:cancelled": "node --test --test-concurrency=1 src/tests/cancelled-settlement.test.ts",
     "test:filled": "node --test --test-concurrency=1 src/tests/filled-settlement.test.ts",
     "test:filled-rollback:prepare": "node --test --test-concurrency=1 src/tests/filled-rollback.test.ts",
     "test:filled-rollback:verify": "node --test --test-concurrency=1 src/tests/filled-rollback.test.ts"

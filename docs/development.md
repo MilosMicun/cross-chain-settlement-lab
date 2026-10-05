@@ -760,3 +760,84 @@ generated types, SBF artifact, dependency lockfiles, Rust source and existing te
 suites. Only the five task-authorized files changed; staging remains empty and
 HEAD remains `4adbcc1`. No stage, commit, remote configuration or publication was
 performed.
+
+## Cancelled receipt refunds on a local validator
+
+```bash
+source scripts/env.sh
+bash scripts/check-solana-cancelled.sh
+```
+
+The isolated runner's `--cancelled` mode runs initialization and the new refund
+suite on its own fresh ledger, reusing only the mode-0600 operator credential in
+ignored `.runtime`. It requires the five-instruction IDL: `initialize`,
+`create_order`, `request_cancel`, `accept_filled`, `accept_cancelled`. Existing
+modes keep their ordering, host TCP/UDP occupancy checks, deadlines, loopback-only
+namespace and owned-process/port cleanup. The pinned Agave 4.1.2/SBPF v0 fixture
+uses the documented local SIMD-0500 genesis deactivation above and genuinely
+removes upgrade authority after initialization.
+
+All orders and terminal records come from actual compiled SBF instructions.
+Transactions, including `skipPreflight` rejections, finalize; reads use finalized
+commitment and `minContextSlot` at least the latest finalized transaction slot.
+A separate fee payer isolates fees; fixture minting, rent, donations and user ATA
+closure/recreation are tracked separately. Exact snapshots preserve u64 lamports
+and rent epochs before JSON parsing. Independent SPEC hashes, raw persistent
+records and an integer model check immutable terms, bumps, nonces, receipts,
+counters, cash/YES balances, cumulative issuance, current supply and conservation.
+
+Refund returns the exact deposit with one legacy TransferChecked CPI and one
+CancelledAccepted event, authenticated by bytes, account order, six decimals and
+independent fields. Delivery requires only the operator's signature; donations
+stay locked. Receipt, creation and cancellation replays preserve complete tracked
+snapshots without payout, CPI or event. An unattainable positive minimum still
+permits refund after genuine closure of the empty YES ATA. Closing the empty cash
+ATA causes finalized AccountNotInitialized before any refund CPI; recreating the
+same canonical ATA enables the identical receipt to refund once. Replay succeeds
+with zero escrow and absent YES ATA. This is account-validation failure/retry.
+
+Filled after Refunded rejects with FilledInconsistentRecord. Cancelled after a
+genuine Filled settlement from CancelRequested rejects with RefundTerminalConflict,
+preserving cancellation history, YES issuance/user custody and reimbursement.
+Adversarial signer, PDA/account, recipient, mint/program, alias, economic terms,
+deployment/domain, high-order chain-ID byte and receipt cases assert exact error
+names and numeric codes and preserve all tracked snapshots. Anchor rejects
+cross-type Accounting as AccountDiscriminatorMismatch, wrong existing PDA records
+or nonce as ConstraintSeeds, an unsigned operator as AccountNotSigner, and another
+executable token program as InvalidProgramId before handler validation. A
+recipient/escrow alias fails ConstraintDuplicateMutableAccount (2040) before the
+handler's RefundUnsafeAlias check.
+
+Public signatures, finalized slots, errors, parsed events, CPI bytes/accounts,
+independently expected refund snapshots, model balances/counters and receipt
+hashes remain in `cancelled-evidence.json` under the run's ignored
+`.runtime/initialization-*` directory. Evidence contains no private keys.
+
+These checks assume an explicitly trusted operator; hashes and attestations do
+not prove a destination outcome. No EVM cancellation/finality or cross-chain
+execution was verified. No deliberately insufficient-escrow SPL transfer rollback
+was verified for Cancelled acceptance; that remains a separate required follow-up
+fixture. Host u128 overflow tests do not prove on-chain overflow behavior.
+
+Verified on 2026-10-05: the fresh runner passed 49 initialization and 45 Cancelled
+subtests, plus two parent tests (96 Node tests total), with no failures, skips,
+cancellations or todos. Cancelled evidence records 58 finalized transactions:
+four genuine creations, four original-user cancellation requests, two refunds,
+one fill, four exact protocol replays, 33 executed rejections and ten separate
+fixture/user operations. Refunds total 10,000,001 cash units; reimbursements total
+3,000,000; cumulative YES issuance and current YES supply are 6,000,000.
+Outstanding deposits are
+5,000,000 cash units plus a separately tracked 17-unit escrow donation. Both mints
+conserve balances. Evidence remains in ignored
+`.runtime/initialization-g7buk9ir/cancelled-evidence.json`; owned processes stopped
+and every reserved TCP/UDP port was released.
+
+The unchanged full Filled runner also passed on a separate fresh ledger: 49
+initialization, 53 creation, 27 cancellation and 34 Filled subtests, plus four
+parents (167 Node tests), with no failures, skips, cancellations or todos. Its
+evidence remains under ignored `.runtime/initialization-95lwxfg6/`; owned
+processes stopped and all reserved TCP/UDP ports were released. All 132 Rust host
+tests, locked workspace check, formatting, pinned Anchor build, TypeScript
+typecheck/import checks, aggregate build and whitespace checks passed. SHA-256
+comparisons preserve production Rust, the compiled SBF binary, complete JSON IDL,
+generated TypeScript types and both dependency lockfiles.
