@@ -40,8 +40,14 @@ export type FinalizedPendingOrder = {
   escrowBalance: bigint;
   terms: EvmTerms;
 };
+export type ReadFinalizedCancellationRequestInput = ReadFinalizedPendingOrderInput;
+export type FinalizedCancellationRequest = Omit<FinalizedPendingOrder, "state"> & {
+  state: "CancelRequested";
+  cancellationRequested: true;
+};
 export type SourceOrderErrorCode = "InvalidInput" | "ConfigurationMismatch" | "MissingAccount" | "InvalidAccount"
   | "InvalidBinding" | "InvalidAmounts" | "HashMismatch" | "NotPending" | "InconsistentPending"
+  | "NotCancelRequested" | "InconsistentCancellationRequest"
   | "StaleContext" | "RpcTimeout";
 export class SourceOrderError extends Error {
   readonly code: SourceOrderErrorCode;
@@ -75,6 +81,23 @@ function hex<Width extends 20 | 32>(bytes: Uint8Array | readonly number[], width
  * (a timeout does not cancel the underlying connection request).
  */
 export async function readFinalizedPendingOrder(input: ReadFinalizedPendingOrderInput): Promise<FinalizedPendingOrder> {
+  return { ...await readFinalizedSourceOrder(input, "Pending"), state: "Pending" };
+}
+
+/** Observes program state under the trusted RPC/configuration model. The on-chain
+ * request_cancel transition enforces the original user's signature; this adapter
+ * does not independently verify it. CancelRequested records intent, not proof of
+ * destination cancellation. Neither this observation nor a timeout authorizes a
+ * refund: a later EVM Filled outcome remains possible and must be reconciled.
+ */
+export async function readFinalizedCancellationRequest(input: ReadFinalizedCancellationRequestInput): Promise<FinalizedCancellationRequest> {
+  return { ...await readFinalizedSourceOrder(input, "CancelRequested"), state: "CancelRequested", cancellationRequested: true };
+}
+
+async function readFinalizedSourceOrder(
+  input: ReadFinalizedPendingOrderInput,
+  requiredState: "Pending" | "CancelRequested",
+): Promise<Omit<FinalizedPendingOrder, "state">> {
   const { connection, nonce, minFinalizedSlot } = input;
   requireOrder(Number.isSafeInteger(minFinalizedSlot) && minFinalizedSlot > 0, "InvalidInput", "minFinalizedSlot must be a positive safe integer");
   requireOrder(typeof nonce === "bigint" && nonce >= 0n && nonce < U64_MAX, "InvalidInput", "nonce must be bigint in 0..=u64::MAX-1");
@@ -161,9 +184,15 @@ export async function readFinalizedPendingOrder(input: ReadFinalizedPendingOrder
     "HashMismatch", "Stored order ID or terms hash differs from canonical SHA-256");
   const escrowInfo = account(3, TOKEN_PROGRAM_ID, ACCOUNT_SIZE, "Escrow");
   const state = Object.keys(o.state)[0];
-  requireOrder(state === "pending", "NotPending", `Order is ${state}; new execution requires Pending`);
-  requireOrder(o.cancellationRequested === false && o.acceptedReceipt === null,
-    "InconsistentPending", "Pending order has a cancellation request or accepted receipt");
+  if (requiredState === "Pending") {
+    requireOrder(state === "pending", "NotPending", `Order is ${state}; new execution requires Pending`);
+    requireOrder(o.cancellationRequested === false && o.acceptedReceipt === null,
+      "InconsistentPending", "Pending order has a cancellation request or accepted receipt");
+  } else {
+    requireOrder(state === "cancelRequested", "NotCancelRequested", `Order is ${state}; cancellation observation requires CancelRequested`);
+    requireOrder(o.cancellationRequested === true && o.acceptedReceipt === null,
+      "InconsistentCancellationRequest", "CancelRequested order lacks cancellation intent or has an accepted receipt");
+  }
   // Terminal orders may have empty escrow following settlement/refund. Reject
   // their eligibility above rather than classifying valid paid-out records as corrupt.
   requireOrder(escrowInfo.data[108] === 1 && [72, 109, 129].every((offset) => escrowInfo.data.readUInt32LE(offset) === 0),
@@ -176,7 +205,7 @@ export async function readFinalizedPendingOrder(input: ReadFinalizedPendingOrder
   return {
     accounts: { config: config.toBase58(), userNonce: userNonce.toBase58(), order: order.toBase58(), escrow: escrow.toBase58(),
       userCashAta: userCashAta.toBase58(), userYesAta: userYesAta.toBase58() },
-    contextSlot: response.context.slot, state: "Pending", orderId: hex(canonicalId, 32), termsHash: hex(canonicalHash, 32), escrowBalance: token.amount,
+    contextSlot: response.context.slot, orderId: hex(canonicalId, 32), termsHash: hex(canonicalHash, 32), escrowBalance: token.amount,
     terms: { identity: { domain: { sourceDomain: hex(terms.identity.domain.sourceDomain, 32), destinationDomain: hex(terms.identity.domain.destinationDomain, 32),
       solanaProgram: hex(terms.identity.domain.solanaProgram, 32), chainId: terms.identity.domain.chainId, settlement: hex(terms.identity.domain.settlement, 20) },
     user: hex(terms.identity.user, 32), nonce }, market: hex(terms.market, 32), outcome: 0, cashAmount, minimumShares },
