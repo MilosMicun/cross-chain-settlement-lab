@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run isolated suites, including Cancelled and two-ledger Filled rollback."""
+"""Run isolated suites, including Cancelled and two-ledger Filled/Cancelled rollback."""
 
 import base64
 import json
@@ -15,13 +15,17 @@ import urllib.error
 import urllib.request
 
 arguments = sys.argv[1:]
-if arguments not in ([], ["--orders"], ["--cancellation"], ["--filled"], ["--filled-rollback"], ["--cancelled"], ["--isolated-network"],
+if arguments not in ([], ["--orders"], ["--cancellation"], ["--filled"], ["--filled-rollback"], ["--cancelled-rollback"], ["--cancelled"], ["--isolated-network"],
                      ["--isolated-network", "--orders"], ["--isolated-network", "--cancellation"], ["--isolated-network", "--filled"],
-                     ["--isolated-network", "--filled-rollback"], ["--isolated-network", "--cancelled"]):
+                     ["--isolated-network", "--filled-rollback"], ["--isolated-network", "--cancelled-rollback"], ["--isolated-network", "--cancelled"]):
     raise SystemExit("Unexpected runner arguments")
 cancelled_mode = "--cancelled" in arguments
 filled_mode = "--filled" in arguments
-rollback_mode = "--filled-rollback" in arguments
+cancelled_rollback_mode = "--cancelled-rollback" in arguments
+rollback_mode = "--filled-rollback" in arguments or cancelled_rollback_mode
+rollback_name = "cancelled-rollback" if cancelled_rollback_mode else "filled-rollback"
+rollback_prefix = "cancelled-rollback" if cancelled_rollback_mode else "rollback"
+rollback_phase = "CANCELLED_ROLLBACK_PHASE" if cancelled_rollback_mode else "FILLED_ROLLBACK_PHASE"
 cancellation_mode = "--cancellation" in arguments or filled_mode
 orders_mode = "--orders" in arguments or cancellation_mode
 
@@ -151,7 +155,7 @@ if "--isolated-network" not in arguments:
     os.environ["INITIALIZATION_PARENT_NET"] = os.readlink("/proc/self/ns/net")
     os.execvp("unshare", [
         "unshare", "--user", "--map-root-user", "--net", "--",
-        "python3", str(Path(__file__).resolve()), "--isolated-network", *(["--cancelled"] if cancelled_mode else ["--filled-rollback"] if rollback_mode else ["--filled"] if filled_mode else ["--cancellation"] if cancellation_mode else ["--orders"] if orders_mode else []),
+        "python3", str(Path(__file__).resolve()), "--isolated-network", *(["--cancelled-rollback"] if cancelled_rollback_mode else ["--cancelled"] if cancelled_mode else ["--filled-rollback"] if rollback_mode else ["--filled"] if filled_mode else ["--cancellation"] if cancellation_mode else ["--orders"] if orders_mode else []),
     ])
 if os.readlink("/proc/self/ns/net") == os.environ.get("INITIALIZATION_PARENT_NET"):
     raise SystemExit("The initialization runner requires its own network namespace")
@@ -191,6 +195,7 @@ try:
     })
     # The runner owns phase selection; callers cannot select arbitrary snapshots.
     env.pop("FILLED_ROLLBACK_PHASE", None)
+    env.pop("CANCELLED_ROLLBACK_PHASE", None)
     suites = [("initialization", "test:initialization")]
     if orders_mode:
         suites.append(("orders", "test:orders"))
@@ -217,11 +222,11 @@ try:
         run_suite(name, npm_script)
 
     if rollback_mode:
-        env["FILLED_ROLLBACK_PHASE"] = "prepare"
-        run_suite("filled-rollback-prepare", "test:filled-rollback:prepare")
-        manifest = json.loads((runtime / "rollback-manifest.json").read_text())
-        original_dir = runtime / "rollback-original"
-        altered_dir = runtime / "rollback-altered"
+        env[rollback_phase] = "prepare"
+        run_suite(f"{rollback_name}-prepare", f"test:{rollback_name}:prepare")
+        manifest = json.loads((runtime / f"{rollback_prefix}-manifest.json").read_text())
+        original_dir = runtime / f"{rollback_prefix}-original"
+        altered_dir = runtime / f"{rollback_prefix}-altered"
         original_dir.mkdir()
         altered_dir.mkdir()
         originals = {}
@@ -267,6 +272,7 @@ try:
             restored_dump["account"]["data"] = before["account"]["data"]
             assert restored_dump == before, "No other account field may change"
             changes.append({"address": address, "offset": offset, "original": str(value), "altered": str(value - 1)})
+        conservation_checks = []
         for dumps in (originals, altered):
             for mint in (manifest["cashMint"], manifest["yesMint"]):
                 # Decode the public key locally without another dependency.
@@ -283,21 +289,35 @@ try:
                             total += int.from_bytes(data[64:72], "little")
                 supply = int.from_bytes(base64.b64decode(dumps[mint]["account"]["data"][0])[36:44], "little")
                 assert total == supply, "All exported token balances must reconcile with supply"
-        evidence_path = runtime / "filled-rollback-evidence.json"
+                conservation_checks.append({"snapshot": "original" if dumps is originals else "altered",
+                                            "mint": mint, "supply": str(supply), "sum": str(total)})
+        evidence_path = runtime / f"{rollback_name}-evidence.json"
         evidence = json.loads(evidence_path.read_text())
         evidence["genesisAlterations"] = changes
         evidence["dumpFormat"] = "Pinned solana account --output json; exact u64 metadata preserved"
+        if cancelled_rollback_mode:
+            evidence["genesisConservation"] = conservation_checks
+            for change in changes:
+                address = change["address"]
+                before = base64.b64decode(originals[address]["account"]["data"][0])
+                after = base64.b64decode(altered[address]["account"]["data"][0])
+                change["byteDifferences"] = [{"offset": i, "before": a, "after": b}
+                                              for i, (a, b) in enumerate(zip(before, after)) if a != b]
+                change["otherBytesAndMetadataUnchanged"] = True
+            evidence["ledgers"] = [{"phase": "prepare", "path": str(runtime / "ledger"),
+                                    "genesisHash": rpc("getGenesisHash")}]
+
         evidence_path.write_text(json.dumps(evidence, indent=2) + "\n")
         print("PASS: retained original dumps; altered only escrow amount and cash supply by one unit; both mints conserve balances", flush=True)
         for process in reversed(processes):
             stop_owned(process)
         processes.clear()
         released_ports()
-        ledger = runtime / "rollback-ledger"
+        ledger = runtime / f"{rollback_prefix}-ledger"
         assert not ledger.exists(), "Genesis loading requires a genuinely new ledger"
         # The default genesis faucet uses the CLI keypair and would overwrite
         # the exported cash-authority SOL balance. Use an unrelated identity.
-        rollback_faucet = public_key(runtime / "rollback-genesis-faucet.json")
+        rollback_faucet = public_key(runtime / f"{rollback_prefix}-genesis-faucet.json")
         assert rollback_faucet not in manifest["keys"]
         command = [
             "solana-test-validator", "--quiet", "--config", str(config),
@@ -309,11 +329,19 @@ try:
         ]
         for address in manifest["keys"]:
             command.extend(["--account", address, str(altered_dir / f"{address}.json")])
-        validator = start(command, "rollback-validator")
+        validator = start(command, f"{rollback_prefix}-validator")
         ready(validator)
+        if cancelled_rollback_mode:
+            evidence = json.loads(evidence_path.read_text())
+            genesis_hash = rpc("getGenesisHash")
+            assert genesis_hash != evidence["ledgers"][0]["genesisHash"]
+            evidence["ledgers"].append({"phase": "verify", "path": str(ledger), "genesisHash": genesis_hash,
+                                        "genesisFaucet": rollback_faucet, "freshLedger": True})
+            evidence["preparationCleanup"] = {"ownedProcessesStopped": True, "portsReleased": True}
+            evidence_path.write_text(json.dumps(evidence, indent=2) + "\n")
         print("Ready: second fresh ledger loaded immutable executable/ProgramData snapshots", flush=True)
-        env["FILLED_ROLLBACK_PHASE"] = "verify"
-        run_suite("filled-rollback-verify", "test:filled-rollback:verify")
+        env[rollback_phase] = "verify"
+        run_suite(f"{rollback_name}-verify", f"test:{rollback_name}:verify")
 
 finally:
     # Each process has its own session; terminate its descendants as well as its leader.
@@ -325,3 +353,9 @@ finally:
     # Do not check/release anyone else's ports if the initial occupancy check failed.
     if processes:
         released_ports()
+        if cancelled_rollback_mode:
+            evidence_path = runtime / "cancelled-rollback-evidence.json"
+            if evidence_path.is_file():
+                evidence = json.loads(evidence_path.read_text())
+                evidence["finalCleanup"] = {"ownedProcessesStopped": True, "portsReleased": True}
+                evidence_path.write_text(json.dumps(evidence, indent=2) + "\n")

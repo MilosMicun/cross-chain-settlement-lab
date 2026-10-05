@@ -17,7 +17,9 @@
     "test:cancelled": "node --test --test-concurrency=1 src/tests/cancelled-settlement.test.ts",
     "test:filled": "node --test --test-concurrency=1 src/tests/filled-settlement.test.ts",
     "test:filled-rollback:prepare": "node --test --test-concurrency=1 src/tests/filled-rollback.test.ts",
-    "test:filled-rollback:verify": "node --test --test-concurrency=1 src/tests/filled-rollback.test.ts"
+    "test:filled-rollback:verify": "node --test --test-concurrency=1 src/tests/filled-rollback.test.ts",
+    "test:cancelled-rollback:prepare": "node --test --test-concurrency=1 src/tests/cancelled-rollback.test.ts",
+    "test:cancelled-rollback:verify": "node --test --test-concurrency=1 src/tests/cancelled-rollback.test.ts"
   },
   "dependencies": {
     "@anchor-lang/core": "1.2.0",

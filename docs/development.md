@@ -815,9 +815,10 @@ hashes remain in `cancelled-evidence.json` under the run's ignored
 
 These checks assume an explicitly trusted operator; hashes and attestations do
 not prove a destination outcome. No EVM cancellation/finality or cross-chain
-execution was verified. No deliberately insufficient-escrow SPL transfer rollback
-was verified for Cancelled acceptance; that remains a separate required follow-up
-fixture. Host u128 overflow tests do not prove on-chain overflow behavior.
+execution was verified by this suite. Account-validation failure/retry is covered
+here; the separate two-ledger fixture below verifies insufficient-escrow SPL
+refund transfer rollback. Host u128 overflow tests do not prove on-chain overflow
+behavior.
 
 Verified on 2026-10-05: the fresh runner passed 49 initialization and 45 Cancelled
 subtests, plus two parent tests (96 Node tests total), with no failures, skips,
@@ -841,3 +842,90 @@ tests, locked workspace check, formatting, pinned Anchor build, TypeScript
 typecheck/import checks, aggregate build and whitespace checks passed. SHA-256
 comparisons preserve production Rust, the compiled SBF binary, complete JSON IDL,
 generated TypeScript types and both dependency lockfiles.
+
+## Cancelled refund transfer rollback on a local validator
+
+```bash
+source scripts/env.sh
+bash scripts/check-solana-cancelled-rollback.sh
+```
+
+The isolated `--cancelled-rollback` runner initializes the actual SBF program,
+removes its upgrade authority, and prepares a genuine nonce-zero order with a
+10,000,000-unit cash deposit and 20,000,000 minimum shares. The original user
+signs the cancellation request. Preparation and verification run in separate
+Node processes on two genuinely fresh ledgers; observation slots and blockhashes
+are discarded between them. The runner selects both rollback phase variables,
+overriding or clearing inherited values, and preserves existing suite ordering,
+loopback namespace isolation, host port checks, deadlines and owned-process cleanup.
+
+Controlled genesis fault injection preserves the original finalized CLI account
+dumps and changes only the escrow token amount from 10,000,000 to 9,999,999 and
+cash mint supply by minus one. All other bytes and metadata stay identical.
+Enumerating every live account for both configured mints proves supply
+conservation in the original and altered fixtures. The second ledger loads the
+copied executable and linked ProgramData with exact compiled SBF bytes and
+upgrade authority `None`, without redeployment. Its unrelated genesis faucet
+preserves exported role wallets' SOL balances. Normal Order-PDA custody provides
+no ordinary protocol flow for creating this deficit.
+
+A configured-operator transaction with a separate fee payer submits the complete
+Cancelled receipt (`terminal=2`, zero quantity) without the user's signature.
+The test requires a finalized actual failure: exactly one legacy SPL
+TransferChecked CPI, tag 12, amount 10,000,000, decimals 6, from the escrow through
+the configured cash mint to the original user's canonical cash ATA, authorized
+by the Order PDA. Insufficient-funds logs and SPL `Custom:1` must propagate to the
+outer SBF instruction without an event, mint or extra CPI. Complete before/after
+snapshots check data, ownership, executable flags, exact u64 lamports, rent epochs
+and account sizes; only the separately verified fee-payer debit is excluded.
+This proves no partial refund state persisted. It does not independently observe
+intermediate Accounting writes during transaction execution.
+
+Fixture restoration uses an authorized legacy SPL cash MintTo for exactly one
+unit into escrow. Restoring mint supply together with escrow restores all
+original tracked snapshots and preserves token conservation; it is not a
+production recovery mechanism. The identical terms, receipt and instruction
+retry with a fresh transaction/blockhash must refund once, emit exactly one
+independently checked CancelledAccepted event, and persist Refunded with the
+exact AcceptedReceipt and retained cancellation history. Deposits and refunds
+are each 10,000,000; reimbursement and cumulative YES issuance remain zero.
+An exact replay with empty escrow must succeed without CPI, event or additional
+payout and preserve complete tracked snapshots.
+
+Public transaction signatures, finalized slots, ledger identities, exact genesis
+byte differences, CPI bytes/accounts/logs, before/after snapshots, restoration,
+retry, replay, artifact fingerprint and conservation checks are retained in
+`cancelled-rollback-evidence.json` under the run's ignored
+`.runtime/initialization-*` directory. Credentials are separate mode-0600 files
+and are never included in evidence. These are local SBF/SPL checks under the
+explicitly trusted operator assumption. No production bridge, EVM finality,
+cross-chain execution or on-chain u128 overflow is proved.
+
+Verified on 2026-10-05: the fresh two-ledger refund rollback run passed 49
+initialization, three preparation and five verification subtests, plus three
+parent tests (60 Node tests), with no failures, skips, cancellations or todos.
+Its seven fixture/protocol transactions finalized. The insufficient-funds
+refund failed at slot 22; restoration, successful identical refund and no-op
+replay finalized at slots 57, 92 and 128. Nineteen protocol accounts and the
+separately checked fee payer were exported. Cash supply moved from 20,000,000 to
+19,999,999 only for genesis fault injection and returned to 20,000,000 through
+fixture restoration; both mints conserved balances at each verified phase.
+Evidence remains under ignored `.runtime/initialization-7v_9ov6n/`, alongside
+preserved original and altered CLI dumps. Both ledgers' owned processes stopped
+and all reserved TCP/UDP ports were released. The unchanged Filled rollback
+runner independently passed 60 Node tests on new ledgers, also with complete
+process/port cleanup.
+
+The normal Cancelled runner passed 49 initialization and 45 refund subtests,
+plus two parent tests (96 Node tests), without failures, skips, cancellations or
+todos, on another fresh ledger with full process/port cleanup. Locked workspace
+check, formatting, all 132 Rust host tests, the pinned Anchor/SBF build and
+TypeScript typecheck/import checks passed. The existing nonfatal bigint binding
+warning uses the JavaScript fallback; the SBF build retains its existing
+cdylib/lib LTO warning. SHA-256 comparisons preserve production Rust, existing
+tests, the SBF artifact, complete JSON IDL, generated types and both lockfiles.
+
+The aggregate `bash scripts/check-builds.sh` and whitespace checks also passed.
+Foundry reported unchanged sources and skipped recompilation; its attempt to
+flush the external signature cache hit a read-only filesystem warning without
+failing the check or changing global tooling.
