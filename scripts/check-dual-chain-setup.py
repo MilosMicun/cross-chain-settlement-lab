@@ -72,6 +72,7 @@ def main():
     parser.add_argument("--isolated-network", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--cleanup-self-test", action="store_true",
                         help="Run a disposable failing test after both nodes are ready, then verify cleanup")
+    parser.add_argument("--scenario", choices=("setup", "order-forwarding"), default="setup")
     args = parser.parse_args()
     root = Path(os.environ["LAB_ROOT"]).resolve()
     binary = root / "solana/target/deploy/settlement_lab.so"
@@ -88,7 +89,7 @@ def main():
     if not args.isolated_network:
         os.environ["DUAL_CHAIN_PARENT_NET"] = os.readlink("/proc/self/ns/net")
         command = ["unshare", "--user", "--map-root-user", "--net", "--", "python3",
-                   str(Path(__file__).resolve()), "--isolated-network"]
+                   str(Path(__file__).resolve()), "--isolated-network", "--scenario", args.scenario]
         if args.cleanup_self_test:
             command.append("--cleanup-self-test")
         os.execvp(command[0], command)
@@ -110,10 +111,16 @@ def main():
         "portReleaseScope": "Runner-owned namespace, all reserved TCP/UDP ports",
         "localGenesisLimitation": {"deactivatedFeature": SIMD_0500,
                                    "reason": "Agave 4.1.2 SIMD-0500 prevents SetAuthority(None) for this SBPF v0 fixture"},
-        "scope": "Simultaneous live local configuration agreement only; no orders, receipt transport, cross-chain proofs or production finality",
+        "scenario": args.scenario, "stageExitResults": {},
+        "scope": ("Disposable failing test after node readiness; cleanup verification only"
+                  if args.cleanup_self_test else
+                  "Simultaneous live local configuration agreement only; no orders, receipt transport, cross-chain proofs or production finality"
+                  if args.scenario == "setup" else
+                  "Real finalized source creation and destination purchase; source escrow remains Pending without receipt delivery. No completed cross-chain settlement, reusable terminal-finality observer or production finality"),
         "cleanupSelfTest": args.cleanup_self_test, "ownedProcessGroups": [],
     }
     processes, handles, failures = [], [], []
+    stage_processes = {}
     http = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
     def rpc(port, method, params=None):
@@ -208,6 +215,7 @@ def main():
         else:
             command = ["npm", "--prefix", "harness", "run", "test:dual-chain-setup"]
         tests = start(command, "tests", env)
+        stage_processes["cleanup-self-test" if args.cleanup_self_test else "setup"] = tests
         deadline = time.monotonic() + 600
         while tests.poll() is None:
             nodes_alive()
@@ -217,11 +225,28 @@ def main():
         nodes_alive()
         print((runtime / "tests.log").read_text(), flush=True)
         evidence["testExitCode"] = tests.returncode
+        evidence["stageExitResults"]["cleanup-self-test" if args.cleanup_self_test else "setup"] = tests.returncode
         if tests.returncode != 0:
             raise RuntimeError(f"Dual-chain tests failed: {tests.returncode}")
         for name in ("evm-deployment-manifest.json", "solana-deployment-manifest.json", "agreement-evidence.json"):
             if not (runtime / name).is_file():
                 raise RuntimeError(f"Missing public output: {name}")
+        if args.scenario == "order-forwarding":
+            tests = start(["npm", "--prefix", "harness", "run", "test:order-forwarding"], "order-forwarding", env)
+            stage_processes["order-forwarding"] = tests
+            deadline = time.monotonic() + 600
+            while tests.poll() is None:
+                nodes_alive()
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("Order-forwarding test deadline exceeded (600 seconds)")
+                time.sleep(0.2)
+            nodes_alive()
+            print((runtime / "order-forwarding.log").read_text(), flush=True)
+            evidence["stageExitResults"]["order-forwarding"] = tests.returncode
+            if tests.returncode != 0:
+                raise RuntimeError(f"Order-forwarding tests failed: {tests.returncode}")
+            if not (runtime / "order-forwarding-evidence.json").is_file():
+                raise RuntimeError("Missing public output: order-forwarding-evidence.json")
     except Exception as error:
         failures.append(str(error))
     finally:
@@ -236,6 +261,7 @@ def main():
                 cleanup_failures.append(str(error))
         for handle in handles:
             handle.close()
+        evidence["stageExitResults"].update({name: process.returncode for name, process in stage_processes.items()})
         evidence["ownedProcessesStopped"] = not cleanup_failures
         try:
             deadline = time.monotonic() + 10
