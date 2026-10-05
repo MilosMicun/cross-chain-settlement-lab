@@ -5,7 +5,7 @@ import { PublicKey, SystemProgram, type AccountInfo, type Connection } from "@so
 import type { SettlementLab } from "../../solana/target/types/settlement_lab.ts";
 import type { LiveConfigurationObservation } from "./live-configuration.ts";
 import type { Terms } from "./protocol-encoding.ts";
-const { orderId, termsHash } = await import(new URL("./protocol-encoding.ts", import.meta.url).href) as typeof import("./protocol-encoding.ts");
+const { orderId, termsHash, receiptHash } = await import(new URL("./protocol-encoding.ts", import.meta.url).href) as typeof import("./protocol-encoding.ts");
 
 /** Fixed widths are checked by the adapter before constructing these values. */
 export type Bytes32Hex = `0x${string}` & { readonly __bytes: 32 };
@@ -45,9 +45,19 @@ export type FinalizedCancellationRequest = Omit<FinalizedPendingOrder, "state"> 
   state: "CancelRequested";
   cancellationRequested: true;
 };
+export type ReadFinalizedRecoveryOrderInput = ReadFinalizedPendingOrderInput;
+type RecoveryLifecycle =
+  | { state: "Pending"; cancellationRequested: false; acceptedReceipt: null }
+  | { state: "CancelRequested"; cancellationRequested: true; acceptedReceipt: null }
+  | { state: "Settled"; cancellationRequested: boolean;
+      acceptedReceipt: { terminal: 1; filledQuantity: bigint; receiptHash: Bytes32Hex } }
+  | { state: "Refunded"; cancellationRequested: true;
+      acceptedReceipt: { terminal: 2; filledQuantity: bigint; receiptHash: Bytes32Hex } };
+export type FinalizedRecoveryOrder = Omit<FinalizedPendingOrder, "state"> & RecoveryLifecycle;
 export type SourceOrderErrorCode = "InvalidInput" | "ConfigurationMismatch" | "MissingAccount" | "InvalidAccount"
   | "InvalidBinding" | "InvalidAmounts" | "HashMismatch" | "NotPending" | "InconsistentPending"
   | "NotCancelRequested" | "InconsistentCancellationRequest"
+  | "InconsistentRecoveryRecord"
   | "StaleContext" | "RpcTimeout";
 export class SourceOrderError extends Error {
   readonly code: SourceOrderErrorCode;
@@ -94,10 +104,54 @@ export async function readFinalizedCancellationRequest(input: ReadFinalizedCance
   return { ...await readFinalizedSourceOrder(input, "CancelRequested"), state: "CancelRequested", cancellationRequested: true };
 }
 
+/** Read-only lifecycle snapshot depending on trusted RPC/configuration. Source
+ * terminal state is not independent proof of EVM execution. Snapshots are not
+ * locks; neither a timeout nor an Unseen destination authorizes refund or resend.
+ * A future recovery coordinator must reconcile source and confirmed destination
+ * outcomes before selecting an action. Missing data fails closed. RPC errors
+ * propagate; the single finalized read uses the existing 10-second deadline.
+ */
+export async function readFinalizedRecoveryOrder(input: ReadFinalizedRecoveryOrderInput): Promise<FinalizedRecoveryOrder> {
+  return readFinalizedSourceOrder(input, "Recovery");
+}
+
+function validateRecoveryLifecycle(o: Accounts["order"], cashAmount: bigint, minimumShares: bigint, canonicalHash: Buffer): RecoveryLifecycle {
+  const state = Object.keys(o.state)[0];
+  if (state === "pending" || state === "cancelRequested") {
+    requireOrder(o.acceptedReceipt === null && o.cancellationRequested === (state === "cancelRequested"),
+      "InconsistentRecoveryRecord", "Active order cancellation flag or accepted receipt is inconsistent");
+    return state === "pending"
+      ? { state: "Pending", cancellationRequested: false, acceptedReceipt: null }
+      : { state: "CancelRequested", cancellationRequested: true, acceptedReceipt: null };
+  }
+  const accepted = o.acceptedReceipt;
+  requireOrder(accepted !== null, "InconsistentRecoveryRecord", "Terminal order lacks an accepted receipt");
+  const filledQuantity = BigInt(accepted.filledQuantity.toString());
+  // cashAmount's checked uint64 half-range bound guarantees this product fits.
+  const fullFill = 2n * cashAmount;
+  if (state === "settled") {
+    requireOrder(accepted.terminal === 1 && filledQuantity === fullFill && filledQuantity >= minimumShares,
+      "InconsistentRecoveryRecord", "Settled receipt must be an exact full fill satisfying the minimum");
+  } else {
+    requireOrder(state === "refunded" && o.cancellationRequested === true && accepted.terminal === 2 && filledQuantity === 0n,
+      "InconsistentRecoveryRecord", "Refunded receipt requires cancellation intent and zero Cancelled output");
+  }
+  const canonicalReceiptHash = receiptHash({ termsHash: canonicalHash, terminal: accepted.terminal, filledQuantity });
+  requireOrder(canonicalReceiptHash.equals(Buffer.from(accepted.receiptHash)),
+    "InconsistentRecoveryRecord", "Accepted receipt hash differs from canonical SHA-256");
+  return state === "settled"
+    ? { state: "Settled", cancellationRequested: o.cancellationRequested,
+      acceptedReceipt: { terminal: 1, filledQuantity, receiptHash: hex(canonicalReceiptHash, 32) } }
+    : { state: "Refunded", cancellationRequested: true,
+      acceptedReceipt: { terminal: 2, filledQuantity, receiptHash: hex(canonicalReceiptHash, 32) } };
+}
+
+async function readFinalizedSourceOrder(input: ReadFinalizedPendingOrderInput, requiredState: "Pending" | "CancelRequested"): Promise<Omit<FinalizedPendingOrder, "state">>;
+async function readFinalizedSourceOrder(input: ReadFinalizedRecoveryOrderInput, requiredState: "Recovery"): Promise<FinalizedRecoveryOrder>;
 async function readFinalizedSourceOrder(
   input: ReadFinalizedPendingOrderInput,
-  requiredState: "Pending" | "CancelRequested",
-): Promise<Omit<FinalizedPendingOrder, "state">> {
+  requiredState: "Pending" | "CancelRequested" | "Recovery",
+): Promise<Omit<FinalizedPendingOrder, "state"> | FinalizedRecoveryOrder> {
   const { connection, nonce, minFinalizedSlot } = input;
   requireOrder(Number.isSafeInteger(minFinalizedSlot) && minFinalizedSlot > 0, "InvalidInput", "minFinalizedSlot must be a positive safe integer");
   requireOrder(typeof nonce === "bigint" && nonce >= 0n && nonce < U64_MAX, "InvalidInput", "nonce must be bigint in 0..=u64::MAX-1");
@@ -184,14 +238,17 @@ async function readFinalizedSourceOrder(
     "HashMismatch", "Stored order ID or terms hash differs from canonical SHA-256");
   const escrowInfo = account(3, TOKEN_PROGRAM_ID, ACCOUNT_SIZE, "Escrow");
   const state = Object.keys(o.state)[0];
+  let recoveryLifecycle: RecoveryLifecycle | undefined;
   if (requiredState === "Pending") {
     requireOrder(state === "pending", "NotPending", `Order is ${state}; new execution requires Pending`);
     requireOrder(o.cancellationRequested === false && o.acceptedReceipt === null,
       "InconsistentPending", "Pending order has a cancellation request or accepted receipt");
-  } else {
+  } else if (requiredState === "CancelRequested") {
     requireOrder(state === "cancelRequested", "NotCancelRequested", `Order is ${state}; cancellation observation requires CancelRequested`);
     requireOrder(o.cancellationRequested === true && o.acceptedReceipt === null,
       "InconsistentCancellationRequest", "CancelRequested order lacks cancellation intent or has an accepted receipt");
+  } else {
+    recoveryLifecycle = validateRecoveryLifecycle(o, cashAmount, minimumShares, canonicalHash);
   }
   // Terminal orders may have empty escrow following settlement/refund. Reject
   // their eligibility above rather than classifying valid paid-out records as corrupt.
@@ -201,8 +258,10 @@ async function readFinalizedSourceOrder(
   requireOrder(token.owner.equals(order) && token.mint.equals(c.cashMint) && token.isInitialized && !token.isFrozen
     && !token.isNative && token.delegate === null && token.delegatedAmount === 0n && token.closeAuthority === null,
   "InvalidBinding", "Escrow authority, mint or token state is unsafe");
-  requireOrder(token.amount >= cashAmount, "InvalidAmounts", "Escrow balance is below the order deposit");
-  return {
+  if (requiredState !== "Recovery" || state === "pending" || state === "cancelRequested") {
+    requireOrder(token.amount >= cashAmount, "InvalidAmounts", "Escrow balance is below the order deposit");
+  }
+  const observation: Omit<FinalizedPendingOrder, "state"> = {
     accounts: { config: config.toBase58(), userNonce: userNonce.toBase58(), order: order.toBase58(), escrow: escrow.toBase58(),
       userCashAta: userCashAta.toBase58(), userYesAta: userYesAta.toBase58() },
     contextSlot: response.context.slot, orderId: hex(canonicalId, 32), termsHash: hex(canonicalHash, 32), escrowBalance: token.amount,
@@ -210,4 +269,5 @@ async function readFinalizedSourceOrder(
       solanaProgram: hex(terms.identity.domain.solanaProgram, 32), chainId: terms.identity.domain.chainId, settlement: hex(terms.identity.domain.settlement, 20) },
     user: hex(terms.identity.user, 32), nonce }, market: hex(terms.market, 32), outcome: 0, cashAmount, minimumShares },
   };
+  return recoveryLifecycle === undefined ? observation : { ...observation, ...recoveryLifecycle };
 }
