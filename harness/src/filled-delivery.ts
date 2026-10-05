@@ -4,16 +4,20 @@ import { ASSOCIATED_TOKEN_PROGRAM_ID, TOKEN_PROGRAM_ID, getAssociatedTokenAddres
 import { PublicKey, SystemProgram, type TransactionInstruction } from "@solana/web3.js";
 import type { SettlementLab } from "../../solana/target/types/settlement_lab.ts";
 import type { LiveConfigurationObservation } from "./live-configuration.ts";
-import type { FinalizedPendingOrder, EvmTerms } from "./source-order.ts";
+import type { FinalizedPendingOrder, FinalizedCancellationRequest, EvmTerms } from "./source-order.ts";
 import type { TerminalObservationResult } from "./terminal-observation.ts";
 import type { Terms } from "./protocol-encoding.ts";
 const { orderId, termsHash, receiptHash } = await import(new URL("./protocol-encoding.ts", import.meta.url).href) as typeof import("./protocol-encoding.ts");
 const { BN } = anchor;
 
+type ActiveFilledSourceOrder =
+  | (FinalizedPendingOrder & { cancellationRequested?: false; acceptedReceipt?: null })
+  | (FinalizedCancellationRequest & { acceptedReceipt?: null });
+
 export type BuildAcceptFilledInstructionInput = {
   readonly program: Program<SettlementLab>;
   readonly expectedConfiguration: LiveConfigurationObservation;
-  readonly sourceOrder: FinalizedPendingOrder;
+  readonly sourceOrder: ActiveFilledSourceOrder;
   readonly observation: TerminalObservationResult;
 };
 function requireInput(ok: boolean, message: string): asserts ok {
@@ -36,8 +40,9 @@ const safeSlot = (value: number) => Number.isSafeInteger(value) && value > 0;
 
 /** Pure instruction encoding under the trusted-operator model. No I/O, signing,
  * submission or completion decision. A fabricated Confirmed object is not an
- * EVM proof. The finalized Pending observation is a snapshot, not a source lock;
- * permanent on-chain records resolve terminal conflicts and exact replays.
+ * EVM proof. Observations are snapshots, not locks; cancellation intent alone
+ * authorizes neither delivery nor refund. On-chain accept_filled preserves
+ * cancellation history and resolves terminal conflicts and exact replays.
  */
 export async function buildAcceptFilledInstruction(input: BuildAcceptFilledInstructionInput): Promise<TransactionInstruction> {
   const { program } = input;
@@ -46,16 +51,21 @@ export async function buildAcceptFilledInstruction(input: BuildAcceptFilledInstr
     expectedConfiguration: input.expectedConfiguration, sourceOrder: input.sourceOrder, observation: input.observation,
   });
   requireInput(observed?.kind === "Confirmed" && observed.receipt?.terminal === 1, "requires Confirmed/Filled");
+  requireInput(source.state === "Pending" || source.state === "CancelRequested", "expected active source state");
+  requireInput(source.state === "Pending"
+    ? !("cancellationRequested" in source) || source.cancellationRequested === false
+    : source.cancellationRequested === true, "inconsistent cancellationRequested");
+  requireInput(!("acceptedReceipt" in source) || source.acceptedReceipt === null, "active acceptedReceipt must be null");
   const t = canonical(source.terms), ot = canonical(observed.terms), d = t.identity.domain;
-  const id = orderId(t.identity), hash = termsHash(t);
   const max = (1n << 64n) - 1n;
-  requireInput(source.state === "Pending" && safeSlot(source.contextSlot)
-    && typeof source.escrowBalance === "bigint" && source.escrowBalance >= t.cashAmount,
-  "expected finalized Pending source snapshot");
+  requireInput(safeSlot(source.contextSlot)
+    && typeof source.escrowBalance === "bigint" && source.escrowBalance >= t.cashAmount && source.escrowBalance <= max,
+  "expected funded finalized active source snapshot");
   requireInput(typeof t.identity.nonce === "bigint" && t.identity.nonce >= 0n && t.identity.nonce < max
     && t.outcome === 0 && typeof t.cashAmount === "bigint" && t.cashAmount >= 1n && t.cashAmount <= max / 2n
     && typeof t.minimumShares === "bigint" && t.minimumShares >= 1n && t.minimumShares <= max,
   "nonce, YES outcome or amount bounds");
+  const id = orderId(t.identity), hash = termsHash(t);
   requireInput(isDeepStrictEqual(t, ot) && sameHex(source.orderId, id) && sameHex(observed.orderId, id)
     && sameHex(source.termsHash, hash) && sameHex(observed.termsHash, hash) && sameHex(observed.receipt.termsHash, hash),
   "complete terms, identity or terms hash disagree");

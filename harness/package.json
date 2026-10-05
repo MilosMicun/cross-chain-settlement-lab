@@ -31,6 +31,7 @@
     "test:execute-wins": "node --test --test-concurrency=1 --test-isolation=none src/tests/execute-wins.test.ts",
     "test:failed-execution-refund": "node --test --test-concurrency=1 --test-isolation=none src/tests/failed-execution-refund.test.ts",
     "test:filled-delivery": "node --test --test-concurrency=1 --test-isolation=none src/tests/filled-delivery.test.ts",
+    "test:filled-delivery-recovery": "node --test --test-concurrency=1 --test-isolation=none src/tests/filled-delivery-recovery.test.ts",
     "test:cancellation-forwarding-live": "node --test --test-concurrency=1 --test-isolation=none src/tests/cancellation-forwarding-live.test.ts",
     "test:cancellation-forwarding": "node --test --test-concurrency=1 --test-isolation=none src/tests/cancellation-forwarding.test.ts",
     "test:order-forwarding": "node --test --test-concurrency=1 --test-isolation=none src/tests/order-forwarding.test.ts",
