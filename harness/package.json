@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit",
     "check:imports": "node src/check-imports.ts",
     "test:encoding": "node --test --test-concurrency=1 src/tests/protocol-encoding.test.ts",
+    "test:source-order": "node --test --test-concurrency=1 --test-isolation=none src/tests/source-order.test.ts",
     "test:evm-deployment": "node --test --test-concurrency=1 src/tests/evm-deployment.test.ts",
     "test:solana-configuration": "node --test --test-concurrency=1 src/tests/solana-configuration.test.ts",
     "test:solana-deployment": "node --test --test-concurrency=1 --test-isolation=none src/tests/solana-deployment.test.ts",
