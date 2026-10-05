@@ -23,6 +23,7 @@
     "test:cancelled-delivery": "node --test --test-concurrency=1 --test-isolation=none src/tests/cancelled-delivery.test.ts",
     "test:cancelled-delivery-live": "node --test --test-concurrency=1 --test-isolation=none src/tests/cancelled-delivery-live.test.ts",
     "test:execute-wins": "node --test --test-concurrency=1 --test-isolation=none src/tests/execute-wins.test.ts",
+    "test:failed-execution-refund": "node --test --test-concurrency=1 --test-isolation=none src/tests/failed-execution-refund.test.ts",
     "test:filled-delivery": "node --test --test-concurrency=1 --test-isolation=none src/tests/filled-delivery.test.ts",
     "test:cancellation-forwarding-live": "node --test --test-concurrency=1 --test-isolation=none src/tests/cancellation-forwarding-live.test.ts",
     "test:cancellation-forwarding": "node --test --test-concurrency=1 --test-isolation=none src/tests/cancellation-forwarding.test.ts",

@@ -72,7 +72,7 @@ def main():
     parser.add_argument("--isolated-network", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--cleanup-self-test", action="store_true",
                         help="Run a disposable failing test after both nodes are ready, then verify cleanup")
-    parser.add_argument("--scenario", choices=("setup", "order-forwarding", "terminal-observation", "filled-delivery", "cancellation-forwarding", "cancelled-delivery", "execute-wins"), default="setup")
+    parser.add_argument("--scenario", choices=("setup", "order-forwarding", "terminal-observation", "filled-delivery", "cancellation-forwarding", "cancelled-delivery", "execute-wins", "failed-execution-refund"), default="setup")
     args = parser.parse_args()
     root = Path(os.environ["LAB_ROOT"]).resolve()
     binary = root / "solana/target/deploy/settlement_lab.so"
@@ -122,6 +122,8 @@ def main():
                   if args.scenario == "filled-delivery" else
                   "Controlled EVM Filled -> source user cancellation -> destination cancel preserves Filled -> delayed source settlement and one replay; trusted operator/RPC and local N+2 only, no production bridge/finality, automatic retries or restart recovery"
                   if args.scenario == "execute-wins" else
+                  "A mined venue revert leaves source escrow locked; only explicit original-user intent plus confirmed destination Cancelled enables one refund and one replay. Mock tokens, trusted operator/RPC and local N+2 only; no production bridge/finality, automatic retries or restart recovery. Forced-gas execute is a test fixture action"
+                  if args.scenario == "failed-execution-refund" else
                   "One finalized source user cancellation, fresh confirmed destination Cancelled delivery, atomic source refund and explicit receipt replay on the same local deployments. Trusted operator/RPC and local N+2 policy only; no trustless bridge, production finality, races or restart recovery"
                   if args.scenario == "cancelled-delivery" else
                   "One finalized source user cancellation and confirmed destination Cancelled with explicit replay and rejected late execution; source escrow stays locked. Trusted operator/RPC and local N+2 policy only; no receipt delivery/refund, production bridge/finality or restart recovery"
@@ -246,6 +248,7 @@ def main():
             raise RuntimeError("Unsuccessful public setup agreement")
         stages = {
             "setup": [],
+            "failed-execution-refund": [("failed-execution-refund", "test:failed-execution-refund", "failed-execution-refund-evidence.json")],
             "cancellation-forwarding": [("cancellation-forwarding", "test:cancellation-forwarding-live", "cancellation-forwarding-live-evidence.json")],
             "cancelled-delivery": [("cancellation-forwarding", "test:cancellation-forwarding-live", "cancellation-forwarding-live-evidence.json"),
                                    ("cancelled-delivery", "test:cancelled-delivery-live", "cancelled-delivery-live-evidence.json")],
