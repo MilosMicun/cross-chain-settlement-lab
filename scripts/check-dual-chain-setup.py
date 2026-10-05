@@ -72,7 +72,7 @@ def main():
     parser.add_argument("--isolated-network", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--cleanup-self-test", action="store_true",
                         help="Run a disposable failing test after both nodes are ready, then verify cleanup")
-    parser.add_argument("--scenario", choices=("setup", "order-forwarding", "terminal-observation", "filled-delivery", "cancellation-forwarding"), default="setup")
+    parser.add_argument("--scenario", choices=("setup", "order-forwarding", "terminal-observation", "filled-delivery", "cancellation-forwarding", "cancelled-delivery"), default="setup")
     args = parser.parse_args()
     root = Path(os.environ["LAB_ROOT"]).resolve()
     binary = root / "solana/target/deploy/settlement_lab.so"
@@ -120,6 +120,8 @@ def main():
                   if args.scenario == "order-forwarding" else
                   "One local source deposit, confirmed destination Filled delivery, source issuance/reimbursement and exact replay under trusted operator/RPC assumptions; no cancellation/refund flow, races, production finality or restart recovery"
                   if args.scenario == "filled-delivery" else
+                  "One finalized source user cancellation, fresh confirmed destination Cancelled delivery, atomic source refund and explicit receipt replay on the same local deployments. Trusted operator/RPC and local N+2 policy only; no trustless bridge, production finality, races or restart recovery"
+                  if args.scenario == "cancelled-delivery" else
                   "One finalized source user cancellation and confirmed destination Cancelled with explicit replay and rejected late execution; source escrow stays locked. Trusted operator/RPC and local N+2 policy only; no receipt delivery/refund, production bridge/finality or restart recovery"
                   if args.scenario == "cancellation-forwarding" else
                   "Live destination observation of EVM-only fixture orders; unchanged source state. No source refund eligibility, receipt delivery, completed cross-chain flow, production finality or restart recovery"),
@@ -243,6 +245,8 @@ def main():
         stages = {
             "setup": [],
             "cancellation-forwarding": [("cancellation-forwarding", "test:cancellation-forwarding-live", "cancellation-forwarding-live-evidence.json")],
+            "cancelled-delivery": [("cancellation-forwarding", "test:cancellation-forwarding-live", "cancellation-forwarding-live-evidence.json"),
+                                   ("cancelled-delivery", "test:cancelled-delivery-live", "cancelled-delivery-live-evidence.json")],
             "order-forwarding": [("order-forwarding", "test:order-forwarding", "order-forwarding-evidence.json")],
             "terminal-observation": [("terminal-observation", "test:terminal-observation-live", "terminal-observation-live-evidence.json")],
             "filled-delivery": [("order-forwarding", "test:order-forwarding", "order-forwarding-evidence.json"),
