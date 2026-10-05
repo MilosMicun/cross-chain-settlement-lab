@@ -20,6 +20,7 @@
     "test:solana-configuration": "node --test --test-concurrency=1 src/tests/solana-configuration.test.ts",
     "test:solana-deployment": "node --test --test-concurrency=1 --test-isolation=none src/tests/solana-deployment.test.ts",
     "test:dual-chain-setup": "node --test --test-concurrency=1 --test-isolation=none src/tests/dual-chain-setup.test.ts",
+    "test:cancelled-delivery": "node --test --test-concurrency=1 --test-isolation=none src/tests/cancelled-delivery.test.ts",
     "test:filled-delivery": "node --test --test-concurrency=1 --test-isolation=none src/tests/filled-delivery.test.ts",
     "test:cancellation-forwarding-live": "node --test --test-concurrency=1 --test-isolation=none src/tests/cancellation-forwarding-live.test.ts",
     "test:cancellation-forwarding": "node --test --test-concurrency=1 --test-isolation=none src/tests/cancellation-forwarding.test.ts",
