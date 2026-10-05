@@ -929,3 +929,48 @@ The aggregate `bash scripts/check-builds.sh` and whitespace checks also passed.
 Foundry reported unchanged sources and skipped recompilation; its attempt to
 flush the external signature cache hit a read-only filesystem warning without
 failing the check or changing global tooling.
+
+## Terminal observation against live Anvil
+
+```bash
+source scripts/env.sh
+bash scripts/check-terminal-observation.sh
+```
+
+The runner first executes the unchanged dual-chain setup suite, then runs the
+live observer suite on the same owned nodes with its public manifests and genuine
+configuration agreement. Setup and observation have separate logs and exit
+results; either failure fails the runner. Existing namespace isolation, bounded
+waits, liveness/port checks, owned-process cleanup and the Agave 4.1.2 SIMD-0500
+local genesis limitation remain.
+
+Verified on 2026-10-05 with Anvil 1.5.1-stable: EIP-1898 `eth_call` accepts actual
+inclusion/head block hashes with `requireCanonical: true`. Filled at block 10
+returns `NotConfirmed` at heads 10 and 11, then `Confirmed` at head 12 with exactly
+two additional blocks. Cancelled confirms with zero output; execute/cancel
+replays of Filled emit no events and preserve its complete record. Explicit-gas
+execute of Cancelled really mines with status 0 and traced `OrderCancelled`
+revert data; observation throws `FailedTransaction`. An unused transaction hash
+returns `NotConfirmed/MissingReceipt` without receipt content.
+
+The instrumented adapter forwards real RPC requests unchanged and asserts only
+allowed reads, exact canonical history tags, and zero observer submissions,
+mining, signing or source calls. Independent SHA-256 preimages, actual receipts,
+block identities, token supply/balance/allowance/custody/counter comparisons,
+separate native gas costs, and unchanged finalized source accounts/activity are
+retained in ignored `.runtime/dual-chain-setup-sz34rtpl/terminal-observation-live-evidence.json`.
+Setup passed 11 subtests plus one parent (12 Node tests); live observation passed
+10 subtests plus one parent (11), and the offline observer suite passed 131 tests.
+Owned process groups stopped and all reserved TCP/UDP ports were released.
+The unchanged order-forwarding runner also passed 11 setup and 10 forwarding
+subtests plus two parents (23 Node tests). Occupied-port rejection occurred before
+fixture creation. The existing cleanup self-test intentionally failed with exit 1;
+all owned groups stopped and ports were released. The nonfatal bigint native
+binding warning continues to use the JavaScript fallback.
+
+Both orders are explicitly EVM-only fixtures, with no finalized Solana user order
+or source cancellation request. This verifies local destination observation under
+the trusted operator model; it establishes no source refund eligibility, receipt
+delivery, completed cross-chain flow, production finality or restart recovery.
+MissingReceipt establishes neither Unseen nor permission to resend. Credentials
+remain separate from public evidence.

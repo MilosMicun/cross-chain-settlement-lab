@@ -13,6 +13,7 @@
     "check:imports": "node src/check-imports.ts",
     "test:encoding": "node --test --test-concurrency=1 src/tests/protocol-encoding.test.ts",
     "test:source-order": "node --test --test-concurrency=1 --test-isolation=none src/tests/source-order.test.ts",
+    "test:terminal-observation-live": "node --test --test-concurrency=1 --test-isolation=none src/tests/terminal-observation-live.test.ts",
     "test:terminal-observation": "node --test --test-concurrency=1 --test-isolation=none src/tests/terminal-observation.test.ts",
     "test:evm-deployment": "node --test --test-concurrency=1 src/tests/evm-deployment.test.ts",
     "test:solana-configuration": "node --test --test-concurrency=1 src/tests/solana-configuration.test.ts",

@@ -72,7 +72,7 @@ def main():
     parser.add_argument("--isolated-network", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--cleanup-self-test", action="store_true",
                         help="Run a disposable failing test after both nodes are ready, then verify cleanup")
-    parser.add_argument("--scenario", choices=("setup", "order-forwarding"), default="setup")
+    parser.add_argument("--scenario", choices=("setup", "order-forwarding", "terminal-observation"), default="setup")
     args = parser.parse_args()
     root = Path(os.environ["LAB_ROOT"]).resolve()
     binary = root / "solana/target/deploy/settlement_lab.so"
@@ -116,7 +116,9 @@ def main():
                   if args.cleanup_self_test else
                   "Simultaneous live local configuration agreement only; no orders, receipt transport, cross-chain proofs or production finality"
                   if args.scenario == "setup" else
-                  "Real finalized source creation and destination purchase; source escrow remains Pending without receipt delivery. No completed cross-chain settlement, reusable terminal-finality observer or production finality"),
+                  "Real finalized source creation and destination purchase; source escrow remains Pending without receipt delivery. No completed cross-chain settlement, reusable terminal-finality observer or production finality"
+                  if args.scenario == "order-forwarding" else
+                  "Live destination observation of EVM-only fixture orders; unchanged source state. No source refund eligibility, receipt delivery, completed cross-chain flow, production finality or restart recovery"),
         "cleanupSelfTest": args.cleanup_self_test, "ownedProcessGroups": [],
     }
     processes, handles, failures = [], [], []
@@ -231,22 +233,25 @@ def main():
         for name in ("evm-deployment-manifest.json", "solana-deployment-manifest.json", "agreement-evidence.json"):
             if not (runtime / name).is_file():
                 raise RuntimeError(f"Missing public output: {name}")
-        if args.scenario == "order-forwarding":
-            tests = start(["npm", "--prefix", "harness", "run", "test:order-forwarding"], "order-forwarding", env)
-            stage_processes["order-forwarding"] = tests
+        if args.scenario in ("order-forwarding", "terminal-observation"):
+            stage = args.scenario
+            suite = "test:order-forwarding" if stage == "order-forwarding" else "test:terminal-observation-live"
+            output = "order-forwarding-evidence.json" if stage == "order-forwarding" else "terminal-observation-live-evidence.json"
+            tests = start(["npm", "--prefix", "harness", "run", suite], stage, env)
+            stage_processes[stage] = tests
             deadline = time.monotonic() + 600
             while tests.poll() is None:
                 nodes_alive()
                 if time.monotonic() >= deadline:
-                    raise RuntimeError("Order-forwarding test deadline exceeded (600 seconds)")
+                    raise RuntimeError(f"{stage} test deadline exceeded (600 seconds)")
                 time.sleep(0.2)
             nodes_alive()
-            print((runtime / "order-forwarding.log").read_text(), flush=True)
-            evidence["stageExitResults"]["order-forwarding"] = tests.returncode
+            print((runtime / f"{stage}.log").read_text(), flush=True)
+            evidence["stageExitResults"][stage] = tests.returncode
             if tests.returncode != 0:
-                raise RuntimeError(f"Order-forwarding tests failed: {tests.returncode}")
-            if not (runtime / "order-forwarding-evidence.json").is_file():
-                raise RuntimeError("Missing public output: order-forwarding-evidence.json")
+                raise RuntimeError(f"{stage} tests failed: {tests.returncode}")
+            if not (runtime / output).is_file():
+                raise RuntimeError(f"Missing public output: {output}")
     except Exception as error:
         failures.append(str(error))
     finally:
