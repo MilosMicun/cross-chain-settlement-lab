@@ -11,6 +11,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "check:imports": "node src/check-imports.ts",
+    "test:terminal-discovery": "node --test --test-concurrency=1 --test-isolation=none src/tests/terminal-discovery.test.ts",
     "test:recovery-plan": "node --test --test-concurrency=1 --test-isolation=none src/tests/recovery-plan.test.ts",
     "test:encoding": "node --test --test-concurrency=1 src/tests/protocol-encoding.test.ts",
     "test:source-recovery": "node --test --test-concurrency=1 --test-isolation=none src/tests/source-recovery.test.ts",
