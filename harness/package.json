@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit",
     "check:imports": "node src/check-imports.ts",
     "test:encoding": "node --test --test-concurrency=1 src/tests/protocol-encoding.test.ts",
+    "test:evm-deployment": "node --test --test-concurrency=1 src/tests/evm-deployment.test.ts",
     "test:initialization": "node --test --test-concurrency=1 src/tests/initialization.test.ts",
     "test:orders": "node --test --test-concurrency=1 src/tests/order-creation.test.ts",
     "test:cancellation": "node --test --test-concurrency=1 src/tests/order-cancellation.test.ts",
