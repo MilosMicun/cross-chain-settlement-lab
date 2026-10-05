@@ -72,7 +72,7 @@ def main():
     parser.add_argument("--isolated-network", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--cleanup-self-test", action="store_true",
                         help="Run a disposable failing test after both nodes are ready, then verify cleanup")
-    parser.add_argument("--scenario", choices=("setup", "order-forwarding", "terminal-observation", "terminal-discovery", "filled-delivery", "cancellation-forwarding", "cancelled-delivery", "execute-wins", "failed-execution-refund"), default="setup")
+    parser.add_argument("--scenario", choices=("setup", "order-forwarding", "terminal-observation", "terminal-discovery", "recovery-observation", "filled-delivery", "cancellation-forwarding", "cancelled-delivery", "execute-wins", "failed-execution-refund"), default="setup")
     args = parser.parse_args()
     root = Path(os.environ["LAB_ROOT"]).resolve()
     binary = root / "solana/target/deploy/settlement_lab.so"
@@ -130,6 +130,8 @@ def main():
                   if args.scenario == "cancellation-forwarding" else
                   "Live local terminal rediscovery from bounded EVM history of EVM-only fixtures; unchanged source state. Trusted RPC/operator and local N+2 only; no process-restart coordinator, source receipt delivery, automatic retry, refund eligibility, production finality or bridge proof"
                   if args.scenario == "terminal-discovery" else
+                  "Read-only recovery observation from fresh application processes after forwarding exited, with both chains still running; no saved transaction hash input, receipt delivery, retry, machine/node restart, abrupt broadcast crash, production finality or bridge proof"
+                  if args.scenario == "recovery-observation" else
                   "Live destination observation of EVM-only fixture orders; unchanged source state. No source refund eligibility, receipt delivery, completed cross-chain flow, production finality or restart recovery"),
         "cleanupSelfTest": args.cleanup_self_test, "ownedProcessGroups": [],
     }
@@ -255,6 +257,8 @@ def main():
             "cancelled-delivery": [("cancellation-forwarding", "test:cancellation-forwarding-live", "cancellation-forwarding-live-evidence.json"),
                                    ("cancelled-delivery", "test:cancelled-delivery-live", "cancelled-delivery-live-evidence.json")],
             "order-forwarding": [("order-forwarding", "test:order-forwarding", "order-forwarding-evidence.json")],
+            "recovery-observation": [("order-forwarding", "test:order-forwarding", "order-forwarding-evidence.json"),
+                                     ("recovery-observation", "test:recovery-observation-live", "recovery-observation-live-evidence.json")],
             "terminal-discovery": [("terminal-discovery", "test:terminal-discovery-live", "terminal-discovery-live-evidence.json")],
             "terminal-observation": [("terminal-observation", "test:terminal-observation-live", "terminal-observation-live-evidence.json")],
             "execute-wins": [("order-forwarding", "test:order-forwarding", "order-forwarding-evidence.json"),

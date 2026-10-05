@@ -15,6 +15,7 @@
     "test:terminal-discovery": "node --test --test-concurrency=1 --test-isolation=none src/tests/terminal-discovery.test.ts",
     "test:recovery-plan": "node --test --test-concurrency=1 --test-isolation=none src/tests/recovery-plan.test.ts",
     "test:recovery-observation": "node --test --test-concurrency=1 --test-isolation=none src/tests/recovery-observation.test.ts",
+    "test:recovery-observation-live": "node --test --test-concurrency=1 --test-isolation=none src/tests/recovery-observation-live.test.ts",
     "test:encoding": "node --test --test-concurrency=1 src/tests/protocol-encoding.test.ts",
     "test:source-recovery": "node --test --test-concurrency=1 --test-isolation=none src/tests/source-recovery.test.ts",
     "test:source-order": "node --test --test-concurrency=1 --test-isolation=none src/tests/source-order.test.ts",
