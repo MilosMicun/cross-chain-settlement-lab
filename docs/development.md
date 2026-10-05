@@ -974,3 +974,52 @@ the trusted operator model; it establishes no source refund eligibility, receipt
 delivery, completed cross-chain flow, production finality or restart recovery.
 MissingReceipt establishes neither Unseen nor permission to resend. Credentials
 remain separate from public evidence.
+
+## Confirmed Filled delivery to Solana
+
+```bash
+source scripts/env.sh
+npm --prefix harness run typecheck
+npm --prefix harness run check:imports
+npm --prefix harness run test:terminal-observation
+bash scripts/check-filled-delivery.sh
+bash scripts/check-terminal-observation.sh
+```
+
+The filled-delivery runner requires successful unchanged setup and forwarding
+suites and their public evidence, then runs the new suite on the same owned
+nodes without resetting, redeploying or changing domains. The pure instruction
+adapter rehashes complete terms/receipts, checks confirmation metadata and
+configuration bindings, derives canonical accounts and encodes the actual IDL
+with `accountsStrict`. It performs no RPC, signing or submission. A fabricated
+Confirmed object remains a trusted operator assertion, never an EVM proof.
+
+Verified on 2026-10-05: the real forwarding user's finalized Pending deposit and
+original purchase hash are re-observed through the existing readers. Delivery
+finalizes Settled with one FilledAccepted event, exactly one MintToChecked CPI
+for 20,000,000 YES and one TransferChecked CPI for 10,000,000 source cash to the
+executor. Escrow becomes zero; user cash remains 15,000,000 and cash supply
+25,000,000. Accounting records deposited/reimbursed 10,000,000, refunded zero
+and issued 20,000,000. An explicit identical-instruction replay finalizes with
+no event, CPI or protocol/token change. Complete raw records, retained nonce
+and cancellation history, independent Borsh/hash encoding and EVM terminal
+storage, allowances, custody and economics are checked. Finalized account reads
+require `minContextSlot` at least the applicable transaction slot. Only the
+small operator fee balance changes for delivery/replay; large initializer SOL
+balances are never narrowed or compared.
+
+Setup passed 11 subtests plus one parent, forwarding 10 plus one, and delivery
+8 plus one (32 Node tests). The offline observer passed 131 tests; the separate
+terminal-observation regression passed 12 setup and 11 live tests. Occupied-port
+preflight rejected before fixture creation. The existing cleanup self-test
+intentionally exited 1; all owned groups stopped and reserved ports were
+released, including successful runs. The existing nonfatal bigint binding
+warning uses the JavaScript fallback.
+
+Public `filled-delivery-evidence.json`, separate stage logs and
+`runner-evidence.json` remain in the ignored run directory. Credentials remain
+separate mode-0600 fixtures. Source cash reimbursement and EVM executor
+prefunding are separate balances. This proves one local happy path and exact
+source replay under trusted operator/RPC assumptions, with the existing Agave
+4.1.2 SIMD-0500 genesis limitation. It does not prove cancellation/refunds across
+both chains, races, production finality, a bridge or restart recovery.
