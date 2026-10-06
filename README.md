@@ -1,5 +1,7 @@
 # Solana-to-EVM YES purchase settlement lab
 
+[![Offline regression](https://github.com/MilosMicun/cross-chain-settlement-lab/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/MilosMicun/cross-chain-settlement-lab/actions/workflows/ci.yml)
+
 A Solana user escrows mock cash to request an EVM YES-position purchase. A
 prefunded executor buys the position on EVM with its own liquidity. An
 operator-attested terminal outcome then causes Solana to either mint mock YES
@@ -181,8 +183,13 @@ runner. It invokes all **17 existing offline regression stages**, including
 builds, locked Rust checks/tests, strict Forge lint, the existing fuzz/invariant
 settings, and offline TypeScript suites. It launches no blockchain nodes and
 does not cover validator integration, live cross-chain scenarios, or production
-finality. No successful hosted CI run has been verified yet; the historical
-local evidence above remains separate.
+finality. The first [hosted run](https://github.com/MilosMicun/cross-chain-settlement-lab/actions/runs/37449467360)
+completed successfully on **2026-10-06**, on Ubuntu 24.04, for commit
+`23a06aca05347e366c404c3b8fdcb76ef1e0546a`: setup, all **17/17 offline
+regression stages**, and report upload passed. The run's commit, successful
+conclusion, job steps and logs were independently verified. This hosted offline
+result remains separate from the locally verified live integration and
+historical evidence above.
 
 Run the same setup and regression entry point locally:
 
@@ -206,8 +213,7 @@ selected public setup, version, dependency, build and stage logs and summaries,
 including on failure. CI uploads only those selected report files with seven-day
 retention, excluding wallets/keypairs, credentials, environment dumps, installed
 tools and dependency caches. Cancellation or hard runner termination can prevent
-final collection/upload. The first hosted run will be checked after review and
-manual publication.
+final collection/upload.
 
 ## Trust and limitations
 
