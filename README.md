@@ -3,15 +3,17 @@
 [![Offline regression](https://github.com/MilosMicun/cross-chain-settlement-lab/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/MilosMicun/cross-chain-settlement-lab/actions/workflows/ci.yml)
 
 A local Solana-to-EVM purchase settlement prototype: the user's deposit stays
-in Solana escrow while a prefunded executor pays for the EVM purchase.
-Confirmed operator-attested outcomes enable source settlement or refund.
+in Solana escrow while a prefunded executor pays for the EVM purchase. This demo
+follows execution winning a cancellation race, then fresh application processes
+recovering the confirmed outcome and settling Solana.
 
-![Interactive local settlement CLI: select both scenarios, inspect verified Filled and Cancelled results and public evidence, then finish](docs/assets/demo.gif)
+![Interactive local settlement CLI: six verified steps from escrow deposit through an execution-wins cancellation race, fresh-process recovery and source settlement](docs/assets/demo.gif)
 
-Recorded interactive CLI execution with real local mock tokens and **separate
-fresh deployments** for Filled and Cancelled recovery. **Operator and RPC are
-trusted.** Running segments are genuine; most build/deployment/finality waits
-are omitted with VHS `Hide`/`Show`. Results use the run's validated public evidence.
+Recorded genuine Filled execution on a **fresh local mock-token deployment**.
+**Operator and RPC are trusted.** The six-step **verified walkthrough reviews
+the completed run**, using its validated public evidence. The running segment
+is genuine; most build/deployment/finality waits are omitted with VHS
+`Hide`/`Show`. Completion observes chain state without submitting a replay.
 
 ## What this demonstrates
 

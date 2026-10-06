@@ -22,11 +22,11 @@ Show
 Type "bash scripts/run-demo-ui.sh"
 Enter
 Wait+Screen@10s /LOCAL RUN \/ SELECT SCENARIO/
-Sleep 3s
+Sleep 2s
 Down
-Sleep 600ms
-Down
-Sleep 1200ms
+Sleep 400ms
+Up
+Sleep 800ms
 Screenshot menu.png
 Sleep 300ms
 Enter
@@ -35,12 +35,28 @@ Sleep 1500ms
 Screenshot filled-running.png
 Sleep 300ms
 Hide
-# Builds (1800s) and the first runner (2000s) have existing bounded deadlines.
-Wait+Screen@4000s /VERIFIED \/ Filled.*result 1\/1/
-Wait+Screen@10s /Enter: run Cancelled local demo/
+# Builds (1800s) and the runner (2000s) retain their bounded deadlines.
+Wait+Screen@4000s /VERIFIED WALKTHROUGH \/ Filled.*Step 1 \/ 6/
+Wait+Screen@10s /Enter: next step/
 Show
-Sleep 9s
-Screenshot filled.png
+# These are verified reviews of the completed run, not live transaction stages.
+Sleep 3500ms
+Screenshot story-01.png
+Sleep 300ms
+Enter
+Wait+Screen@10s /Step 2 \/ 6/
+Sleep 3500ms
+Screenshot story-02.png
+Sleep 300ms
+Right
+Wait+Screen@10s /Step 3 \/ 6/
+Sleep 3500ms
+Screenshot story-03.png
+Sleep 300ms
+Enter
+Wait+Screen@10s /Step 4 \/ 6/
+Sleep 5s
+Screenshot story-04.png
 Sleep 300ms
 Type "e"
 Wait+Screen@10s /PUBLIC EVIDENCE \/ Filled/
@@ -48,32 +64,25 @@ Sleep 3s
 Screenshot evidence.png
 Sleep 300ms
 Type "e"
-Wait+Screen@10s /VERIFIED \/ Filled/
-Sleep 1s
+Wait+Screen@10s /Step 4 \/ 6/
 Enter
-Wait+Screen@15s /Running: check-cancelled-recovery.sh/
-Sleep 1500ms
-Screenshot cancelled-running.png
+Wait+Screen@10s /Step 5 \/ 6/
+Sleep 3500ms
+Screenshot story-05.png
 Sleep 300ms
-Hide
-Wait+Screen@2100s /VERIFIED \/ Cancelled.*result 2\/2/
+Enter
+Wait+Screen@10s /Step 6 \/ 6/
+Sleep 4s
+Screenshot story-06.png
+Sleep 300ms
+Enter
+Wait+Screen@10s /VERIFIED \/ Filled.*result 1\/1/
 Wait+Screen@10s /Enter: finish demo/
-Show
-Sleep 9s
-Screenshot cancelled.png
-Sleep 300ms
-Left
-Wait+Screen@10s /VERIFIED \/ Filled.*result 1\/2/
-Sleep 2500ms
-Screenshot previous-result.png
-Sleep 300ms
-Right
-Wait+Screen@10s /VERIFIED \/ Cancelled.*result 2\/2/
-Sleep 2s
-Screenshot next-result.png
+Sleep 4s
+Screenshot filled.png
 Sleep 300ms
 Enter
-Wait+Screen@10s /Verified 2 scenario\(s\). Public summary:/
-Sleep 3s
+Wait+Screen@10s /Verified 1 scenario\(s\). Public summary:/
+Sleep 2500ms
 Screenshot completed.png
 Sleep 300ms

@@ -48,6 +48,101 @@ def amount(value):
     return f"{whole}.{fraction:06d}"
 
 
+def filled_walkthrough(result):
+    """Review verified current-run snapshots, never synthesize live progress."""
+    demo = existing_demo()
+    demo.require(result["status"] == "passed" and result["recoveredTerminalOutcome"] == "Filled",
+                 "A Filled walkthrough requires a validated successful result")
+    runtime = ROOT / result["freshDeployment"]
+    forwarding = demo.load_public(runtime / "order-forwarding-evidence.json")
+    recovery = demo.load_public(runtime / "filled-recovery-live-evidence.json")
+    stages = recovery["stages"]
+    creation = forwarding["stages"]["creation"]
+    purchase = forwarding["stages"]["purchase"]
+    destination = purchase["economics"]["state"]
+    cancellation = stages["cancellation"]
+    resumed, complete = (attempt["output"] for attempt in recovery["attempts"][1:])
+    observed = resumed["observation"]["destination"]["observation"]
+    cash = stages["independentExpectations"]["terms"]["cashAmount"]
+    shares = observed["receipt"]["filledQuantity"]
+    locked = creation["economics"]
+    before_purchase = forwarding["stages"]["beforeExecution"]["state"]["balances"]
+    demo.require(creation["state"] == "Pending" and creation["cancellationRequested"] is False and
+                 locked["escrow"] == cash and locked["counters"] == [cash, "0", "0", "0"],
+                 "Missing finalized deposit/locked-cash evidence")
+    demo.require(destination["record"]["status"] == "1" and destination["record"]["filledQuantity"] == shares and
+                 destination["balances"]["yes"]["holders"]["settlement"] == shares and
+                 int(before_purchase["usd"]["holders"]["executor"]) -
+                 int(destination["balances"]["usd"]["holders"]["executor"]) == int(cash) and
+                 purchase["submissionHash"] == result["originalEvmTerminalTransactionHash"] and
+                 purchase["receipt"]["status"] == 1 and purchase["additionalBlocks"] >= 2,
+                 "Missing executor-funded confirmed purchase/custody evidence")
+    after_purchase = forwarding["stages"]["sourceAfterPurchase"]
+    demo.require(after_purchase["economics"] == locked and after_purchase["receiptDelivered"] is False and
+                 after_purchase["exactStateUnchanged"] is True and
+                 cancellation["before"]["state"]["economics"] == locked ==
+                 cancellation["after"]["state"]["economics"] and
+                 creation["finalizedSlot"] < cancellation["finalizedSlot"] < int(result["finalizedSolanaDeliverySlot"]),
+                 "Missing purchase-before-cancellation evidence with cash still locked")
+    # The runner's cancellation fixture starts after the confirmed forwarding
+    # purchase; recovery independently re-observes its unchanged terminal record.
+    demo.require(resumed["observation"]["source"]["state"] == "CancelRequested" and
+                 resumed["observation"]["source"]["cancellationRequested"] is True and
+                 observed["kind"] == "Confirmed" and observed["receipt"]["terminal"] == 1 and
+                 observed["transactionHash"] == purchase["submissionHash"] and
+                 resumed["observation"]["plan"]["kind"] == "DeliverFilled",
+                 "Missing confirmed Filled outcome after user cancellation")
+    demo.require(all(set(attempt["stdin"]) == {"user", "nonce", "minFinalizedSlot", "fromBlock", "toBlock"}
+                     for attempt in recovery["attempts"]) and
+                 len({attempt["processId"] for attempt in recovery["attempts"]}) == 3 and
+                 any(read["method"] == "eth_getLogs" for read in resumed["recoveryReads"]["destination"]),
+                 "Recovery must use fresh processes and chain discovery without a supplied terminal hash")
+    final = complete["observation"]["source"]
+    demo.require(final["state"] == result["finalSourceState"] == "Settled" and
+                 final["cancellationRequested"] is True and
+                 result["accountingBaseUnits"]["reimbursed"] == cash and
+                 result["accountingBaseUnits"]["issued"] == shares and
+                 complete["observation"]["plan"]["kind"] == "Complete" and
+                 complete["submissionCount"] == complete["signingCount"] == 0 and
+                 recovery["attempts"][2]["unchanged"] is True,
+                 "Missing settlement, preserved cancellation history or read-only completion")
+    compact_cash = amount(cash).rstrip("0").rstrip(".")
+    compact_shares = amount(shares).rstrip("0").rstrip(".")
+    return [
+        ("USER DEPOSIT", [f"The user locks {compact_cash} mock USD in Solana escrow.",
+                          "This deposit is not transferred to EVM."],
+         [f"Source lifecycle: {creation['state']}", f"Escrow cash: {amount(locked['escrow'])} mock USD",
+          f"Finalized deposit slot: {creation['finalizedSlot']}"]),
+        ("EXECUTOR PURCHASE", [f"The executor uses its own EVM liquidity to purchase {compact_shares} mock YES.",
+                               "The EVM position is held in Settlement custody."],
+         ["Destination outcome: Filled", f"Executor cash spent: {amount(cash)} mock USD",
+          f"Settlement custody: {amount(shares)} mock YES"]),
+        ("CANCELLATION RACE", ["The user requests cancellation after EVM execution.",
+                               "The destination outcome remains Filled."],
+         [f"Source lifecycle: {resumed['observation']['source']['state']}", "Cancellation requested: True",
+          f"Finalized cancellation slot: {cancellation['finalizedSlot']}"]),
+        ("RECOVERY", ["A fresh application process rediscovers the confirmed Filled outcome.",
+                      "Chain observations establish the outcome; no previous in-memory decision is reused.",
+                      "No terminal transaction hash is supplied to the process."],
+         [f"Recovery process ID: {resumed['processId']}", f"EVM observation: {observed['kind']}",
+          f"Recovery decision: {resumed['observation']['plan']['kind']}"]),
+        ("SOURCE SETTLEMENT", [f"Solana issues {compact_shares} mock YES to the user.",
+                               f"The executor receives {compact_cash} mock USD from source escrow."],
+         [f"Source lifecycle: {final['state']}", f"Cancellation requested: {final['cancellationRequested']}",
+          f"Finalized delivery slot: {result['finalizedSolanaDeliverySlot']}"]),
+        ("COMPLETION", ["The next process observes Complete.", "No further transaction is submitted.",
+                        "This is a read-only observation, not an on-chain replay transaction."],
+         [f"Next process ID: {complete['processId']}",
+          f"Recovery decision: {complete['observation']['plan']['kind']}; further submissions={complete['submissionCount']}",
+          f"Signing operations: {complete['signingCount']}"]),
+    ]
+
+
+def walkthrough_rows(step):
+    heading, explanation, values = step
+    return ["Review of this completed, validated run.", "", heading, *explanation, "", *values]
+
+
 def exit_status(code):
     return code if code >= 0 else 128 - code
 
@@ -247,17 +342,27 @@ class Terminal:
     def evidence_rows(self, result):
         return [
             "Public evidence (full transaction identifiers included):",
+            "Order ID: " + result["orderId"],
+            "Original EVM terminal transaction: " + result["originalEvmTerminalTransactionHash"],
+            "Finalized Solana delivery: " + result["solanaDeliverySignature"],
             *["  " + path for path in result["publicEvidence"]],
             "Runner log: " + result["logs"][0],
         ]
 
     def result(self, result):
+        if result["recoveredTerminalOutcome"] == "Filled":
+            for number, step in enumerate(filled_walkthrough(result), 1):
+                self.card(f"VERIFIED WALKTHROUGH / Filled • Step {number} / 6", walkthrough_rows(step))
         self.card("VERIFIED / " + result["recoveredTerminalOutcome"],
                   self.result_rows(result) + self.evidence_rows(result))
 
     def review(self, results, next_scenario, summary_path, supervisor):
         """Inspect each validated result before continuing, with a separate evidence view."""
         index = len(results) - 1
+        stories = {number: filled_walkthrough(result) for number, result in enumerate(results)
+                   if result["recoveredTerminalOutcome"] == "Filled"}
+        story = index in stories
+        step = 0
         evidence = False
         offset = 0
         with keyboard() as fd:
@@ -265,13 +370,24 @@ class Terminal:
                 if supervisor.interruption is not None:
                     raise TerminalInterrupted(supervisor.interruption)
                 result = results[index]
-                title = ("PUBLIC EVIDENCE" if evidence else "VERIFIED") + " / " + result["recoveredTerminalOutcome"]
-                title += f" • result {index + 1}/{len(results)}"
-                rows = (self.evidence_rows(result) + ["Public summary: " + str(summary_path.relative_to(ROOT))]
-                        if evidence else self.result_rows(result))
-                footer = (["E / Esc / Enter: back to result"] if evidence else
-                          ["Left/Right: completed results • E: public evidence",
-                           "Enter: " + (f"run {next_scenario} local demo" if next_scenario else "finish demo")])
+                if evidence:
+                    title = "PUBLIC EVIDENCE / " + result["recoveredTerminalOutcome"]
+                    rows = self.evidence_rows(result) + ["Public summary: " + str(summary_path.relative_to(ROOT)),
+                                                        "", *self.result_rows(result)]
+                    footer = ["E / Esc / Enter: back to " + ("walkthrough" if story else "result")]
+                elif story:
+                    title = f"VERIFIED WALKTHROUGH / Filled • Step {step + 1} / 6"
+                    rows = walkthrough_rows(stories[index][step])
+                    footer = ["Left/Right: story steps • E: public evidence • F: full result",
+                              "Enter: " + ("next step" if step < 5 else "full result")]
+                else:
+                    title = "VERIFIED / " + result["recoveredTerminalOutcome"]
+                    rows = self.result_rows(result)
+                    footer = ["Left/Right: completed results • E: public evidence" +
+                              (" • W: walkthrough" if index in stories else ""),
+                              "Enter: " + (f"run {next_scenario} local demo" if next_scenario else "finish demo")]
+                if not story or evidence:
+                    title += f" • result {index + 1}/{len(results)}"
                 offset = self.screen(title, rows, footer, offset)
                 key = read_key(fd)
                 if key in ("up", "down"):
@@ -280,6 +396,16 @@ class Terminal:
                     evidence, offset = False, 0
                 elif not evidence and key == "e":
                     evidence, offset = True, 0
+                elif not evidence and story and key == "f":
+                    story, offset = False, 0
+                elif not evidence and not story and key == "w" and index in stories:
+                    story, step, offset = True, 0, 0
+                elif not evidence and story and key in ("left", "right", "enter"):
+                    if key == "enter" and step == 5:
+                        story = False
+                    else:
+                        step = min(max(0, step + (-1 if key == "left" else 1)), 5)
+                    offset = 0
                 elif not evidence and key in ("left", "right"):
                     index = min(max(0, index + (1 if key == "right" else -1)), len(results) - 1)
                     offset = 0

@@ -6,7 +6,7 @@ case "${1:-}" in
     if (( $# != 1 )); then echo 'ERROR: --help takes no other arguments.' >&2; exit 2; fi
     cat <<'HELP'
 Usage: bash scripts/record-demo.sh [--help]
-Record the actual interactive CLI on two separate fresh local deployments.
+Record the actual interactive CLI: Filled alone or both fresh local scenarios.
 Requires the demo's existing tools/permissions plus optional VHS >= 0.12.1,
 ttyd >= 1.7.2, FFmpeg/ffprobe, Chrome/Chromium, fontconfig and DejaVu Sans Mono.
 Optional local tools may live in .local/recording/bin; nothing is installed.
@@ -179,8 +179,10 @@ clear
     require(len(summaries) == 1, 'Expected exactly one current-run interactive summary.')
     summary_path = summaries[0]
     summary = json.loads(summary_path.read_text())
-    require(summary['status'] == 'passed' and summary['exitCode'] == 0 and len(summary['scenarios']) == 2,
-            'Both interactive scenarios must complete successfully.')
+    require(summary['status'] == 'passed' and summary['exitCode'] == 0 and
+            [r['recoveredTerminalOutcome'] for r in summary['scenarios']] in
+            (['Filled'], ['Filled', 'Cancelled']),
+            'Filled alone or both interactive scenarios must complete successfully.')
     spec = importlib.util.spec_from_file_location('demo_validation', root / 'scripts/run-demo.py')
     demo = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(demo)
@@ -201,9 +203,14 @@ clear
             whole, fraction = divmod(int(value), 1_000_000)
             visible.append(f'{key}: {whole}.{fraction:06d} mock ' + ('YES' if key == 'issued' else 'USD'))
         require(all(row in transcript for row in visible), 'Recorded text is missing verified result fields.')
-    require(len({r['freshDeployment'] for r in summary['scenarios']}) == 2, 'Deployments must be separate.')
-    for name in ('menu', 'filled-running', 'filled', 'evidence', 'cancelled-running',
-                 'cancelled', 'previous-result', 'next-result', 'completed'):
+    require(len({r['freshDeployment'] for r in summary['scenarios']}) == len(summary['scenarios']),
+            'Deployments must be separate.')
+    screenshots = ['menu', 'filled-running', 'filled', 'evidence', 'completed']
+    if len(summary['scenarios']) == 2:
+        screenshots += ['cancelled-running', 'cancelled', 'previous-result', 'next-result']
+    else:
+        screenshots += [f'story-{number:02d}' for number in range(1, 7)]
+    for name in screenshots:
         require((session / f'{name}.png').stat().st_size > 0, f'Missing screenshot: {name}')
     raw = session / 'raw.gif'
     media = json.loads(run(['ffprobe', '-v', 'error', '-show_streams', '-show_format', '-of', 'json', str(raw)]))
