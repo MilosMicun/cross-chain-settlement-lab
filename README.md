@@ -2,25 +2,35 @@
 
 [![Offline regression](https://github.com/MilosMicun/cross-chain-settlement-lab/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/MilosMicun/cross-chain-settlement-lab/actions/workflows/ci.yml)
 
-A Solana user escrows mock cash to request an EVM YES-position purchase. A
-prefunded executor buys the position on EVM with its own liquidity. An
-operator-attested terminal outcome then causes Solana to either mint mock YES
-to the user and reimburse the executor, or return the user's escrow after
-confirmed destination cancellation and a user cancellation request.
+A local cross-chain settlement lab using real Rust/Anchor on Solana and
+Solidity on Anvil, with mock assets and a deterministic mock venue. The user's
+Solana deposit stays in escrow while a prefunded executor buys the EVM YES
+position with its own liquidity.
 
-This independently developed local settlement lab runs a real Rust/Anchor
-program on a local Solana validator and real Solidity contracts on Anvil,
-using mock assets and a deterministic mock venue. It demonstrates the custody,
-cancellation races, receipt handling and process recovery relevant to
-cross-chain execution and prediction-market infrastructure.
+![Interactive local settlement CLI: select both scenarios, inspect verified Filled and Cancelled results and public evidence, then finish](docs/assets/demo.gif)
 
-Both terminal flows and adversarial checks are implemented. Existing local
-verification completed **32/32 full regression stages** and **17/17 offline
+Recorded interactive CLI execution with real local mock tokens and **separate
+fresh deployments** for Filled and Cancelled recovery. **Operator and RPC are
+trusted.** Running segments are genuine; most build/deployment/finality waits
+are omitted with VHS `Hide`/`Show`. Results use the run's validated public evidence.
+
+## What this demonstrates
+
+- [Filled settlement](#verification): source YES issuance and executor reimbursement.
+- [Confirmed cancellation](#verification): source refund with no YES issuance.
+- [Cancellation races, atomic rollback and exact replay protection](#verification).
+- [Recovery across fresh application processes](#verification) over running local nodes.
+
+Existing local verification completed **32/32 full regression stages** and **17/17 offline
 stages** on 2026-10-06; these are orchestration stages, not unique test totals.
-The [verification map](#verification) links the checks to their source.
-**The operator and RPC are trusted:** attestations bind receipt contents but
-do not prove execution on the other network. There is no atomic transaction
-across the two networks.
+The [verification map](#verification) links the checks to their source and separates
+live local coverage from offline checks.
+
+After completing the [setup prerequisites](#quick-start), run the interactive demo:
+
+```bash
+bash scripts/run-demo-ui.sh  # Arrow keys + Enter; E for evidence; Left/Right for results
+```
 
 ## Money flow and responsibilities
 
@@ -148,6 +158,27 @@ directory; per-scenario evidence goes to the announced
 `.local/logs/`. These are locally generated records, unavailable in a GitHub
 checkout. Credentials remain separate ignored fixtures. There is no hosted demo.
 
+<details>
+<summary>Reproduce the recording</summary>
+
+```bash
+bash scripts/record-demo.sh # Reproduce the GIF from docs/demo.tape
+```
+
+Recording additionally requires optional [VHS](https://github.com/charmbracelet/vhs)
+**0.12.1 or newer**, ttyd **1.7.2 or newer**, FFmpeg/ffprobe, Chrome/Chromium,
+fontconfig and DejaVu Sans Mono, plus the demo prerequisites above.
+These tools are separate from pinned protocol tooling; the recording wrapper
+installs nothing and also searches ignored `.local/recording/bin`.
+It preserves the original GIF, screenshots, terminal transcript, exact tool
+versions and validation report in a new `.runtime/record-demo-*` directory,
+alongside the CLI's current-run evidence. It replaces the embedded GIF only
+after successful interactive completion, evidence/media checks and cleanup.
+The embedded recording used VHS **0.12.1**, ttyd **1.7.7**, FFmpeg/ffprobe
+**7.0.2**, Chrome for Testing **154.0.8037.92** and DejaVu Sans Mono at 20 px.
+
+</details>
+
 ## Verification
 
 The completed full regression covers builds/static checks, Rust host tests,
@@ -219,7 +250,8 @@ final collection/upload.
 
 - The operator and RPC are trusted. Receipt hashes bind contents, not execution
   proofs. A dishonest operator can fabricate attestations and break backing;
-  an unavailable operator can delay completion indefinitely.
+  an unavailable operator can delay completion indefinitely. There is no atomic
+  transaction across the two networks.
 - Source observations use finalized Solana commitment. Destination observation
   requires a successful EVM receipt, matching terminal storage and two additional
   mined blocks. This local N+2 test policy is not production finality.
