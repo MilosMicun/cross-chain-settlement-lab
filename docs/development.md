@@ -101,6 +101,62 @@ per node. The script suppresses Anvil key output, creates disposable local-only
 keys, supplies an isolated Solana configuration, and stops only its own child
 processes. It does not alter the default Solana wallet/RPC configuration.
 
+## Reproducible local terminal demo
+
+Use the installed pinned environment and harness dependencies described above,
+including Python 3, native Foundry 1.5.1 (`~/.foundry/bin/` or PATH), Linux
+`unshare`/`ip`, permission to create user/network namespaces, and free reserved
+TCP/UDP ports. The wrapper sources `scripts/env.sh` and adds the documented
+Foundry directory to PATH. It checks tool versions and runs the existing build
+check once; it never installs or upgrades tools.
+
+```bash
+bash scripts/run-demo.sh
+```
+
+`--help` describes usage; other arguments fail before builds or node startup.
+The demo runs the existing Filled recovery runner, then the Cancelled recovery
+runner, sequentially on **separate fresh deployments**. Filled first deposits
+source cash and executes the destination purchase, then the user requests
+cancellation. A fresh application process rediscovers the original Filled
+transaction and settles the source while preserving cancellation history:
+Filled wins. Cancelled first deposits and records user cancellation, then
+cancels the unseen destination order; a fresh application process rediscovers
+Cancelled and refunds the source. Each runner also checks a replay-only search
+that waits without writes, followed by an independent completion process that
+submits no further transactions. Application processes are fresh while their
+nodes remain running; each scenario runner stops its nodes afterward.
+
+The concise English output reports the order ID, original EVM terminal hash,
+recovered outcome, finalized Solana delivery signature/slot, final lifecycle,
+source SPL balances and deposited/refunded/reimbursed/issued totals. All token
+amounts are exact integer **base units with six decimals** (1,000,000 units per
+token). Recovery completion and cleanup must both succeed. Values come from
+this invocation's validated public evidence, identified only by each runner's
+own runtime announcement.
+
+Build, prerequisite and complete runner output logs plus a small public
+`demo-summary.json` remain in a new ignored `.runtime/demo-*` directory.
+The summary and terminal output link the public recovery/forwarding evidence,
+`runner-evidence.json`, and stage logs in each announced
+`.runtime/dual-chain-setup-*` directory. Credentials remain separate and are
+never read or copied by the demo. Missing prerequisites, build/stage failures,
+invalid evidence, unsuccessful cleanup, occupied ports, interruption or timeout
+stop the demo with a diagnostic and preserved log paths. The orchestration layer
+signals only its launched processes and waits for the active runner's own node
+cleanup; it never stops an existing listener or deletes earlier runtimes.
+Tool checks, builds and whole scenarios have 120/1800/2000-second deadlines;
+existing runners retain their own shorter readiness/stage deadlines.
+
+These are mock tokens and a deterministic mock venue. Source SPL cash and
+destination EVM cash are separate; the EVM executor is prefunded and later
+reimbursed from source escrow. The operator and RPC are explicitly trusted.
+EVM confirmation uses the local N+2 policy; Solana observations are finalized.
+The existing SIMD-0500 genesis exception documented below still applies.
+This adds no UI, GitHub Pages deployment, production finality, trustless bridge,
+machine/node restart recovery or concurrent-worker support. Historical
+verification sections below retain their original task scope and dates.
+
 ## Verified results and build notes
 
 - Forge compilation and formatting checks passed for the existing EVM contracts
