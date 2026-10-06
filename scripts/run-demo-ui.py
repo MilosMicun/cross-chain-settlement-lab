@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import select
 import shutil
 import signal
@@ -111,36 +112,32 @@ def filled_walkthrough(result):
     return [
         ("USER DEPOSIT", [f"The user locks {compact_cash} mock USD in Solana escrow.",
                           "This deposit is not transferred to EVM."],
-         [f"Source lifecycle: {creation['state']}", f"Escrow cash: {amount(locked['escrow'])} mock USD",
-          f"Finalized deposit slot: {creation['finalizedSlot']}"]),
-        ("EXECUTOR PURCHASE", [f"The executor uses its own EVM liquidity to purchase {compact_shares} mock YES.",
-                               "The EVM position is held in Settlement custody."],
+         [f"Source lifecycle: {creation['state']}", f"Escrow cash: {amount(locked['escrow'])} mock USD"]),
+        ("EXECUTOR PURCHASE", [f"The executor buys {compact_shares} mock YES with its own EVM cash.",
+                               "The position stays in Settlement custody."],
          ["Destination outcome: Filled", f"Executor cash spent: {amount(cash)} mock USD",
           f"Settlement custody: {amount(shares)} mock YES"]),
         ("CANCELLATION RACE", ["The user requests cancellation after EVM execution.",
                                "The destination outcome remains Filled."],
-         [f"Source lifecycle: {resumed['observation']['source']['state']}", "Cancellation requested: True",
-          f"Finalized cancellation slot: {cancellation['finalizedSlot']}"]),
-        ("RECOVERY", ["A fresh application process rediscovers the confirmed Filled outcome.",
-                      "Chain observations establish the outcome; no previous in-memory decision is reused.",
-                      "No terminal transaction hash is supplied to the process."],
-         [f"Recovery process ID: {resumed['processId']}", f"EVM observation: {observed['kind']}",
+         [f"Source lifecycle: {resumed['observation']['source']['state']}", "Destination outcome: Filled"]),
+        ("RECOVERY", ["A fresh application process rediscovers confirmed Filled.",
+                      "Chain reads use no prior in-memory decision or supplied transaction hash."],
+         [f"EVM observation: {observed['kind']}",
           f"Recovery decision: {resumed['observation']['plan']['kind']}"]),
         ("SOURCE SETTLEMENT", [f"Solana issues {compact_shares} mock YES to the user.",
                                f"The executor receives {compact_cash} mock USD from source escrow."],
-         [f"Source lifecycle: {final['state']}", f"Cancellation requested: {final['cancellationRequested']}",
-          f"Finalized delivery slot: {result['finalizedSolanaDeliverySlot']}"]),
-        ("COMPLETION", ["The next process observes Complete.", "No further transaction is submitted.",
-                        "This is a read-only observation, not an on-chain replay transaction."],
-         [f"Next process ID: {complete['processId']}",
-          f"Recovery decision: {complete['observation']['plan']['kind']}; further submissions={complete['submissionCount']}",
-          f"Signing operations: {complete['signingCount']}"]),
+         [f"Source lifecycle: {final['state']}", f"Cancellation requested: {final['cancellationRequested']}"]),
+        ("COMPLETION", ["The next process observes Complete without submitting a transaction.",
+                        "This is a chain observation, not an on-chain replay."],
+         [f"Recovery decision: {complete['observation']['plan']['kind']}",
+          f"Further submissions: {complete['submissionCount']}"]),
     ]
 
 
 def walkthrough_rows(step):
     heading, explanation, values = step
-    return ["Review of this completed, validated run.", "", heading, *explanation, "", *values]
+    return ["Review of this completed, validated run.", "", heading, "", *explanation,
+            "", "", "Verified values:", *values]
 
 
 def exit_status(code):
@@ -231,11 +228,16 @@ class Terminal:
         self.line(self.styled("CROSS-CHAIN  /  SETTLEMENT LAB", "1;36"))
         self.line("Local mock-token demo • Trusted operator/RPC")
 
-    def screen(self, title, rows, footer, offset=0):
+    def screen(self, title, rows, footer, offset=0, emphasis=()):
         """Page long content instead of clipping paths or monetary fields on small TTYs."""
         columns, height = shutil.get_terminal_size((80, 24))
         width = max(12, columns - 2)
-        content = [part for row in rows for part in
+        content = [(part, "1;33" if row in emphasis else
+                    "2" if row in ("Review of this completed, validated run.", "Verified values:") else
+                    "1;32" if row.startswith(("Source lifecycle:", "Destination outcome:", "Escrow cash:",
+                                              "Executor cash spent:", "Settlement custody:", "Recovery decision:",
+                                              "EVM observation:", "Cancellation requested:", "Further submissions:")) else None)
+                   for row in rows for part in
                    (textwrap.wrap(row, width=width, subsequent_indent="  ") or [""])]
         heading = ["CROSS-CHAIN  /  SETTLEMENT LAB", "Local mock-token demo • Trusted operator/RPC", "", title]
         heading = [part for row in heading for part in (textwrap.wrap(row, width) or [""])]
@@ -247,8 +249,18 @@ class Terminal:
             self.line(self.styled(row, "1;36" if index == 0 else "1;32")
                       if index == 0 or row == title else row)
         self.line()
-        for row in content[offset:offset + capacity]:
+        visible = content[offset:offset + capacity]
+        for row, style in visible:
+            if style:
+                row = self.styled(row, style)
+            else:
+                row = re.sub(r"\b(?:[0-9]+(?:\.[0-9]+)? mock (?:USD|YES)|Pending|Filled|"
+                             r"CancelRequested|Settled|Complete)\b",
+                             lambda match: self.styled(match[0], "1;32"), row)
             self.line(" " + row)
+        # Keep controls at the bottom; story spacing stays stable across steps.
+        for _ in range(capacity - len(visible)):
+            self.line()
         self.line(self.styled(f"Lines {offset + 1}-{min(offset + capacity, len(content))} of {len(content)}"
                               " • Up/Down to scroll", "2"))
         for row in controls:
@@ -340,7 +352,7 @@ class Terminal:
         return rows
 
     def evidence_rows(self, result):
-        return [
+        rows = [
             "Public evidence (full transaction identifiers included):",
             "Order ID: " + result["orderId"],
             "Original EVM terminal transaction: " + result["originalEvmTerminalTransactionHash"],
@@ -348,6 +360,19 @@ class Terminal:
             *["  " + path for path in result["publicEvidence"]],
             "Runner log: " + result["logs"][0],
         ]
+        if result["recoveredTerminalOutcome"] == "Filled":
+            demo = existing_demo()
+            runtime = ROOT / result["freshDeployment"]
+            forwarding = demo.load_public(runtime / "order-forwarding-evidence.json")
+            recovery = demo.load_public(runtime / "filled-recovery-live-evidence.json")
+            rows.extend(["", "Walkthrough details:",
+                         f"Finalized deposit slot: {forwarding['stages']['creation']['finalizedSlot']}",
+                         f"Finalized cancellation slot: {recovery['stages']['cancellation']['finalizedSlot']}"])
+            for attempt in recovery["attempts"]:
+                output = attempt["output"]
+                rows.append(f"Application process {output['processId']}: {output['observation']['plan']['kind']}; "
+                            f"submissions={output['submissionCount']}")
+        return rows
 
     def result(self, result):
         if result["recoveredTerminalOutcome"] == "Filled":
@@ -388,7 +413,8 @@ class Terminal:
                               "Enter: " + (f"run {next_scenario} local demo" if next_scenario else "finish demo")]
                 if not story or evidence:
                     title += f" • result {index + 1}/{len(results)}"
-                offset = self.screen(title, rows, footer, offset)
+                emphasis = (stories[index][step][0],) if story and not evidence else ()
+                offset = self.screen(title, rows, footer, offset, emphasis)
                 key = read_key(fd)
                 if key in ("up", "down"):
                     offset += 1 if key == "down" else -1

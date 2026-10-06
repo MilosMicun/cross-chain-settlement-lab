@@ -5,8 +5,8 @@ Require bash
 Set Shell bash
 Set FontFamily "DejaVu Sans Mono"
 Set FontSize 20
-Set Columns 104
-Set Rows 34
+Set Columns 78
+Set Rows 24
 Set Padding 20
 Set Framerate 10
 Set CursorBlink false
@@ -60,7 +60,12 @@ Screenshot story-04.png
 Sleep 300ms
 Type "e"
 Wait+Screen@10s /PUBLIC EVIDENCE \/ Filled/
-Sleep 3s
+Sleep 2s
+Screenshot evidence-identifiers.png
+Sleep 300ms
+Down 8
+Wait+Screen@10s /Walkthrough details:/
+Sleep 2s
 Screenshot evidence.png
 Sleep 300ms
 Type "e"
@@ -78,6 +83,11 @@ Sleep 300ms
 Enter
 Wait+Screen@10s /VERIFIED \/ Filled.*result 1\/1/
 Wait+Screen@10s /Enter: finish demo/
+Sleep 2s
+Screenshot filled-top.png
+Sleep 300ms
+Down 22
+Wait+Screen@10s /Cleanup: owned processes stopped=True; ports released=True/
 Sleep 4s
 Screenshot filled.png
 Sleep 300ms

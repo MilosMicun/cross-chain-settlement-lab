@@ -216,7 +216,7 @@ clear
     media = json.loads(run(['ffprobe', '-v', 'error', '-show_streams', '-show_format', '-of', 'json', str(raw)]))
     stream = media['streams'][0]
     duration = float(media['format']['duration'])
-    require(stream['codec_name'] == 'gif' and stream['width'] >= 1000 and stream['height'] >= 700
+    require(stream['codec_name'] == 'gif' and stream['width'] >= 1000 and stream['height'] >= 550
             and 25 <= duration <= 65, 'Unexpected GIF format, dimensions or duration.')
     run(['ffmpeg', '-v', 'error', '-i', str(raw), '-f', 'null', '-'])
     report.update(status='passed', cliExitCode=0, terminalRestored=True,
