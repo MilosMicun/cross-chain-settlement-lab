@@ -157,6 +157,81 @@ This adds no UI, GitHub Pages deployment, production finality, trustless bridge,
 machine/node restart recovery or concurrent-worker support. Historical
 verification sections below retain their original task scope and dates.
 
+## One-command regression checks
+
+Use the already installed pinned tools and harness dependencies:
+
+```bash
+bash scripts/check-regression.sh
+bash scripts/check-regression.sh --offline
+```
+
+Both modes source `scripts/env.sh`, select native Foundry from
+`~/.foundry/bin/`, check tool pins, and run `check-builds.sh` once (including
+Rust/Solidity formatting, TypeScript typecheck and import checks). They then run
+`cargo test --workspace --locked` from `solana/`, Forge lint with `--deny notes`,
+and all Forge tests with local Solidity 0.8.30 and 256 fuzz runs. The configured
+invariant settings remain 128 runs, depth 64, and `fail_on_revert = true`.
+
+The explicit offline TypeScript inventory is `protocol-encoding`,
+`solana-configuration`, `source-order`, `source-cancellation`, `source-recovery`,
+`terminal-observation`, `terminal-discovery`, `recovery-plan`,
+`recovery-observation`, `cancellation-forwarding`, `cancelled-delivery`, and
+`filled-delivery-recovery` (each a `.test.ts` file). Each runs separately with
+Node's `--test --test-concurrency=1 --test-isolation=none`. Offline mode launches
+no blockchain nodes or live runners; it requires the existing build dependencies
+and caches and is not a guarantee of network-free dependency resolution.
+
+Full mode additionally runs these existing wrappers in order, sequentially:
+`check-evm-deployment.sh`, `check-solana-deployment.sh`, `check-solana-filled.sh`,
+`check-solana-cancelled.sh`, `check-solana-filled-rollback.sh`,
+`check-solana-cancelled-rollback.sh`, `check-filled-delivery.sh`,
+`check-cancelled-delivery.sh`, `check-execute-wins.sh`,
+`check-failed-execution-refund.sh`, `check-terminal-observation.sh`,
+`check-terminal-discovery.sh`, `check-recovery-observation.sh`,
+`check-filled-recovery.sh`, and `check-cancelled-recovery.sh`.
+The Solana deployment receives only the `deployment-manifest.json` identified
+by this invocation's successful EVM deployment runtime announcement.
+
+`OFFLINE_TESTS` and `LIVE_STAGES` in `scripts/check-regression.py` document the
+file-to-stage coverage, also included in the summary. Deployment wrappers cover
+their deployment suites. Solana Filled includes initialization, order creation,
+user cancellation and Filled settlement; Cancelled and both rollback wrappers
+include initialization and their scenario suites (rollback runs prepare/verify).
+Every dual-chain wrapper includes setup; Filled delivery, execute-wins, recovery
+observation and Filled recovery also include order forwarding. Cancelled
+delivery/recovery include live cancellation forwarding. Their final scenario
+suites cover the remaining live files. All current `harness/src/tests/*.test.ts`
+files must be classified, including those deliberately excluded in offline mode;
+unclassified or missing mapped files fail before checks. No standalone runs are
+added for suites covered by wrapper prerequisites, and repeated suites are not
+reported as unique tests or combined into an aggregate test count.
+
+Each invocation preserves stage logs and a public `regression-summary.json` in
+a new ignored `.runtime/regression-*` directory. It records the requested mode,
+required stages, actual argv/commands, working directories, deadlines, exit
+codes, log paths and completion. Only completion of every required stage marks
+that mode passed; an offline pass does not establish a full regression pass.
+The first failure stops further launches and identifies the failed stage.
+Tool/build/Rust/lint/Forge/offline-suite deadlines are respectively
+120/1800/900/120/900/120 seconds. Live wrapper deadlines are 300 seconds for EVM
+deployment, 900 for Solana deployment, 3900 for Solana Filled, 2100 for Solana
+Cancelled, 3300 for each rollback, and 2000 for each dual-chain scenario;
+existing runners keep their own readiness, suite and cleanup bounds.
+Interruption or timeout signals only launched processes, signals an active live
+runner once and waits for its cleanup and exit. The runners own node isolation,
+port reservation and cleanup; unrelated listeners and previous runtimes are
+never stopped or deleted. `--help` performs no work; invalid, repeated or
+conflicting arguments fail before tool selection. Nothing installs or upgrades
+tools or dependencies automatically.
+
+Full mode retains the existing Linux namespace/free-port requirements, mock
+tokens and deterministic mock venue, prefunded executor, explicitly trusted
+operator/RPC, finalized Solana observations, local EVM receipt/storage plus N+2
+policy, and local SIMD-0500 genesis exception. It provides no production bridge
+or finality guarantee. This section describes local orchestration, not CI or
+clean-checkout verification; historical results below retain their original scope.
+
 ## Verified results and build notes
 
 - Forge compilation and formatting checks passed for the existing EVM contracts
