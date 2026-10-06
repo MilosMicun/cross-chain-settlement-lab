@@ -72,7 +72,7 @@ def main():
     parser.add_argument("--isolated-network", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--cleanup-self-test", action="store_true",
                         help="Run a disposable failing test after both nodes are ready, then verify cleanup")
-    parser.add_argument("--scenario", choices=("setup", "order-forwarding", "terminal-observation", "terminal-discovery", "recovery-observation", "filled-recovery", "filled-delivery", "cancellation-forwarding", "cancelled-delivery", "execute-wins", "failed-execution-refund"), default="setup")
+    parser.add_argument("--scenario", choices=("setup", "order-forwarding", "terminal-observation", "terminal-discovery", "recovery-observation", "filled-recovery", "cancelled-recovery", "filled-delivery", "cancellation-forwarding", "cancelled-delivery", "execute-wins", "failed-execution-refund"), default="setup")
     args = parser.parse_args()
     root = Path(os.environ["LAB_ROOT"]).resolve()
     binary = root / "solana/target/deploy/settlement_lab.so"
@@ -134,6 +134,8 @@ def main():
                   if args.scenario == "recovery-observation" else
                   "Fresh application processes independently recover Filled, finalize one source settlement after user cancellation, then recognize Complete without submission; local nodes remain running, trusted operator/RPC and local finality only"
                   if args.scenario == "filled-recovery" else
+                  "Fresh application processes independently recover Cancelled, finalize one source refund, then recognize Complete without submission; local nodes remain running, trusted operator/RPC and local finality only"
+                  if args.scenario == "cancelled-recovery" else
                   "Live destination observation of EVM-only fixture orders; unchanged source state. No source refund eligibility, receipt delivery, completed cross-chain flow, production finality or restart recovery"),
         "cleanupSelfTest": args.cleanup_self_test, "ownedProcessGroups": [],
     }
@@ -258,6 +260,8 @@ def main():
             "cancellation-forwarding": [("cancellation-forwarding", "test:cancellation-forwarding-live", "cancellation-forwarding-live-evidence.json")],
             "cancelled-delivery": [("cancellation-forwarding", "test:cancellation-forwarding-live", "cancellation-forwarding-live-evidence.json"),
                                    ("cancelled-delivery", "test:cancelled-delivery-live", "cancelled-delivery-live-evidence.json")],
+            "cancelled-recovery": [("cancellation-forwarding", "test:cancellation-forwarding-live", "cancellation-forwarding-live-evidence.json"),
+                                   ("cancelled-recovery", "test:cancelled-recovery-live", "cancelled-recovery-live-evidence.json")],
             "order-forwarding": [("order-forwarding", "test:order-forwarding", "order-forwarding-evidence.json")],
             "filled-recovery": [("order-forwarding", "test:order-forwarding", "order-forwarding-evidence.json"),
                                 ("filled-recovery", "test:filled-recovery-live", "filled-recovery-live-evidence.json")],
