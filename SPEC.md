@@ -1,9 +1,22 @@
 # cross-chain-settlement-lab — v1 specification
 
-Status: minimal compilation scaffolds and local RPC health checks are verified.
-Settlement business logic and the cross-chain demo are not implemented; no
-program deployment or cross-chain integration has been tested. Environment
-verified on 2026-10-02.
+Status (2026-10-06): the Rust/Anchor settlement program, Solidity custody and
+mock venue, and TypeScript transport/observation/recovery harness are implemented
+and locally exercised. Existing completed evidence records 32/32 full regression
+stages and, separately, 17/17 offline stages, plus successful Filled and Cancelled
+demo scenarios on separate fresh deployments. Stages are orchestration steps,
+not unique test totals. Verification assumes trusted operator/RPC, finalized
+Solana observations, local EVM receipt/storage plus N+2 confirmation, and the
+existing SBPF v0 / SIMD-0500 genesis exception. Recovery covers fresh application
+processes while nodes remain running; clean-checkout installation, machine/node
+restart, broadcast-crash recovery and concurrent workers are not verified.
+See [README](README.md) and [current development evidence](docs/development.md#current-verification-summary-2026-10-06).
+
+The protocol text below is preserved unchanged. Its statements that receipt
+processing/payout counters remain unimplemented and its final scaffold-only
+verification/setup notes describe earlier milestones, not current implementation
+status. The current program has all five instructions, including `accept_filled`
+and `accept_cancelled`; current commands and limitations are in the linked guides.
 
 ## Purpose and scope
 

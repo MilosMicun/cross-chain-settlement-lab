@@ -1,22 +1,93 @@
 # Local development
 
-Compilation, local RPC health, canonical protocol encoding, EVM settlement,
-and one-time Anchor initialization have been verified within their respective
-test scopes. The EVM Settlement implements atomic purchases, permanent
-cancellation, and terminal replay handling. The Anchor program currently
-exposes `initialize`, `create_order`, and `request_cancel`. Order creation
-atomically deposits legacy SPL cash into the canonical escrow, counts the deposit
-in permanent Accounting, and persists a permanent identity;
-exact creation replay preserves accounts without another deposit. User-signed
-cancellation records intent while keeping cash locked; exact cancellation replay has no additional effect. Receipt acceptance, reimbursement,
-refunds, YES issuance, and cross-chain transport/integration are not implemented.
+The local settlement implementation is complete within the locked v1 scope.
+The Rust/Anchor program exposes `initialize`, `create_order`, `request_cancel`,
+`accept_filled` and `accept_cancelled`. It locks legacy SPL cash, records
+cancellation intent without payment, and atomically either mints mock YES and
+reimburses the fixed executor or refunds after operator-attested destination
+cancellation and a user cancellation request. Solidity Settlement purchases with
+executor liquidity, retains EVM YES and persists permanent terminal records.
+TypeScript transports requests/outcomes, checks matching configurations, observes
+local finality and resumes settlement in fresh application processes while nodes
+remain running.
+
+Use the [README](../README.md) for the money flow and trust boundaries, and
+[SPEC](../SPEC.md) for protocol requirements and canonical vectors. Some protected
+SPEC implementation notes describe earlier milestones; its opening status
+identifies them. No protocol scope or trust model has changed.
+
+- [Setup and dependency preparation](#setup-and-dependency-preparation)
+- [Local terminal demo](#reproducible-local-terminal-demo)
+- [Full and offline regression commands](#one-command-regression-checks)
+- [Current evidence](#current-verification-summary-2026-10-06)
+- [Historical records](#historical-verification-records)
+
+## Current verification summary (2026-10-06)
+
+The following results come from existing completed local records and their
+referenced logs. They were reviewed for documentation; the demo and regression
+were not rerun for this documentation change.
+
+| Run | Observed result | Local evidence (ignored, not distributed with the repository) |
+| --- | --- | --- |
+| Full regression, 2026-10-06 | **32/32 required stages passed**, completed; every stage exit code zero | `.runtime/regression-2nsri94y/regression-summary.json` and each referenced stage log |
+| Offline regression, 2026-10-06 | **17/17 required stages passed**, completed; every stage exit code zero | `.runtime/regression-shj6azpa/regression-summary.json` and each referenced stage log |
+| Existing successful terminal demo | Filled and Cancelled recovery passed on separate fresh deployments; both returned `Complete` with zero further submissions and successful node cleanup | `.runtime/demo-sjml1r16/demo-summary.json`, its build/prerequisite/scenario logs, and public evidence from `.runtime/dual-chain-setup-6kotvoah/` and `.runtime/dual-chain-setup-v4epk8d3/` |
+
+These counts are orchestration stages, not unique test totals. Full regression
+covers tool pins; Solidity/Anchor builds and formatting; locked Rust checks;
+TypeScript typecheck/imports; Rust host tests; Forge lint, unit/fuzz/invariant
+checks; twelve offline TypeScript suites; and fifteen live wrappers. Offline
+covers the first seventeen stages and establishes no live integration result.
+Build logs confirm the SBF binary and JSON/TypeScript IDL with exactly the five
+current instructions. The stage inventory and file-to-runner mapping are in
+[check-regression.py](../scripts/check-regression.py).
+
+Real validator integration exercises Anchor instructions, account constraints,
+legacy SPL operations and finalized executed failures. Both-network integration
+covers receipt delivery, controlled execution/cancellation races, failed
+execution followed by explicit cancellation/refund, terminal observation and
+rediscovery, exact replays, and fresh-process Filled/Cancelled recovery. Rust
+host tests remain distinct from validator integration; Node parents and suites
+repeated by different live wrappers remain separate, without a combined test
+total. Foundry uses 256 fuzz runs and the configured invariant campaign of
+128 runs at depth 64 with `fail_on_revert = true`.
+
+In the successful demo's Filled deployment, 10,000,000 source cash units are
+deposited and reimbursed, 20,000,000 YES units are issued, and escrow ends at zero.
+The source is `Settled` with cancellation history retained. In the independent
+Cancelled deployment, 10,000,000 units are deposited and refunded, reimbursement
+and YES issuance stay zero, and escrow ends at zero with source `Refunded`.
+Each scenario checks intermediate state/balances and an independent completion
+process that submits no further transactions. Both runners record zero stage
+exit codes, stopped owned processes and released ports. Full regression logs
+also record successful owned-process/port cleanup for every live wrapper.
+
+Rollback deficit tests deliberately export a genuine finalized fixture and load
+an altered genesis with one cash unit removed from escrow and mint supply. They
+prove atomic failure and identical receipt retry after fixture restoration,
+including rollback of a successful mint when the later reimbursement CPI fails.
+They do not demonstrate an ordinary custody deficit or a production recovery
+procedure. See the [Filled](../harness/src/tests/filled-rollback.test.ts) and
+[Cancelled](../harness/src/tests/cancelled-rollback.test.ts) tests.
+
+All results assume trusted operator/RPC and the existing disposable Agave 4.1.2
+SBPF v0 / SIMD-0500 genesis exception for genuine upgrade-authority removal
+[described below](#one-time-initialization-check). Receipt hashes bind contents,
+not execution proofs. Dishonest attestations can break backing; operator
+unavailability can delay completion indefinitely. EVM N+2 is a local test policy,
+not production finality. Recovery assumes running local nodes and does not cover
+machine/node restart, broadcast-crash recovery or concurrent workers. There is
+no production bridge, live venue integration, sell/redeem or public deployment;
+tests are not an external security audit. Clean-checkout installation has not
+been verified. Existing LTO and optional bigint native-binding warnings remain;
+the latter uses its JavaScript fallback.
 
 ## Pinned environment
 
 Verified on 2026-10-02: Ubuntu 24.04.4 LTS / WSL2, x86_64, kernel
-6.18.33.2-microsoft-standard-WSL2; Git 2.43.0. This checkout is at
-`/home/milos/dev/cross-chain-settlement-lab`. All paths below are relative to that
-root unless prefixed with `~`.
+6.18.33.2-microsoft-standard-WSL2; Git 2.43.0. All paths below are relative to
+the repository root unless prefixed with `~`.
 
 | Component | Exact version | Installed location |
 | --- | --- | --- |
@@ -39,7 +110,8 @@ Direct npm pins: `@anchor-lang/core` 1.2.0, `@solana/web3.js` 1.98.4,
 `@solana/spl-token` 0.4.14, ethers 6.16.0, TypeScript 5.9.3,
 `@types/node` 24.19.1, and `@types/bn.js` 5.2.0. Rust pins `anchor-lang` and
 `anchor-spl` to 1.2.0. Retain `solana/Cargo.lock` and
-`harness/package-lock.json`; the Foundry scaffold has no external dependencies.
+`harness/package-lock.json`; the Foundry project has no external library
+dependencies.
 
 The [Anchor recommendation](https://www.anchor-lang.com/docs/updates/release-notes/1-2-0)
 is 1.2.0 with Solana 4.1.2. The
@@ -50,7 +122,7 @@ SBPF v0; no floating toolchain is selected.
 SBF rustc reports LLVM 20.1.7 and an unknown commit hash/date; the exact compiler
 distribution is pinned by the platform-tools v1.54 release.
 
-## Clean checkout setup and checks
+## Setup and dependency preparation
 
 Requirements: native x86_64 Ubuntu/WSL, Git, Bash, Python 3, curl, tar, xz/bzip2,
 GNU coreutils, working C/C++ compiler and make, and native Foundry 1.5.1 on PATH.
@@ -59,18 +131,22 @@ make 4.3, libssl-dev 3.0.13, Python 3.12.3, and OpenSSL 3.0.13. AVM uses rustls;
 no additional apt packages or system-wide upgrades were needed. pkg-config,
 cmake, clang, and libudev-dev were absent and not required by these builds.
 
+Native Foundry 1.5.1 must already be available; `install-tools.sh` does not
+install it. Select its existing `~/.foundry/bin` location if necessary before
+the installer invokes the tool check. These commands describe dependency
+preparation; installation from a clean checkout has not been verified.
+
 Run from the repository root:
 
 ```bash
+export PATH="$HOME/.foundry/bin:$PATH"
 bash scripts/install-tools.sh
 source scripts/env.sh
 (cd harness && npm ci --ignore-scripts --no-audit)
 bash scripts/check-tools.sh
-bash scripts/check-builds.sh
-bash scripts/check-rpc.sh
-bash scripts/check-solana-initialization.sh
-bash scripts/check-solana-orders.sh
-bash scripts/check-solana-cancellation.sh
+bash scripts/run-demo.sh
+bash scripts/check-regression.sh --offline
+bash scripts/check-regression.sh
 ```
 
 The installer checks existing executables before installing missing components;
@@ -162,8 +238,8 @@ verification sections below retain their original task scope and dates.
 Use the already installed pinned tools and harness dependencies:
 
 ```bash
-bash scripts/check-regression.sh
 bash scripts/check-regression.sh --offline
+bash scripts/check-regression.sh
 ```
 
 Both modes source `scripts/env.sh`, select native Foundry from
@@ -232,7 +308,18 @@ policy, and local SIMD-0500 genesis exception. It provides no production bridge
 or finality guarantee. This section describes local orchestration, not CI or
 clean-checkout verification; historical results below retain their original scope.
 
-## Verified results and build notes
+## Historical verification records
+
+The records below retain their original dates, results and task-specific scope.
+Statements such as "not implemented", "not verified here", "future" or "pending"
+refer to the milestone recorded in that section, not the current project.
+Instruction inventories and counts likewise describe those historical runs.
+Use the current setup, demo and regression sections above for present guidance;
+these historical command blocks document narrower checks. The current summary
+supersedes old implementation-status statements while retaining meaningful
+technical limitations, including trust and the local genesis exception.
+
+### Verified results and build notes
 
 - Forge compilation and formatting checks passed for the existing EVM contracts
   using Solidity 0.8.30.
@@ -267,7 +354,7 @@ unchanged through Anchor's build. These are compilation checks, not settlement
 tests or evidence of cross-chain safety. The 13 existing Rust encoding tests
 remain separate from validator integration checks.
 
-## One-time initialization check
+### One-time initialization check
 
 After building with `bash scripts/check-builds.sh`, run:
 
@@ -376,7 +463,7 @@ creation, then released its own listener. Builds still emit the existing LTO
 and bigint fallback warnings; Foundry also reported a nonfatal signature-cache
 write failure outside the repository under the filesystem sandbox.
 
-## Atomic order creation check
+### Atomic order creation check
 
 ```bash
 source scripts/env.sh
@@ -491,7 +578,7 @@ and multiple error enums in IDL) and TypeScript test callback return types were
 resolved. Remaining warnings are the existing LTO/bigint fallback warnings and a
 nonfatal Foundry signature-cache write failure under the filesystem sandbox.
 
-## User cancellation request check
+### User cancellation request check
 
 ```bash
 source scripts/env.sh
@@ -580,7 +667,7 @@ existing LTO, bigint JavaScript fallback, and nonfatal sandboxed Foundry
 signature-cache warnings remain. Terminal replay coverage remains host-only;
 there is still no receipt processing, source payout, or cross-chain demo.
 
-## Source deposit accounting check
+### Source deposit accounting check
 
 Use the commands in the cancellation check above to run all three existing
 suites sequentially on one fresh validator. Historical ignored ledgers belong
@@ -640,7 +727,7 @@ remain; arithmetic overflow and terminal cancellation replay coverage remain
 host-only.
 
 
-## Atomic Filled settlement check
+### Atomic Filled settlement check
 
 ```bash
 source scripts/env.sh
@@ -771,7 +858,7 @@ write failure. Socket/namespace access required running the isolated validator
 outside the filesystem sandbox. EVM execution/finality, Cancelled/refund,
 transport/cross-chain behavior, and second-CPI failure remain unverified here.
 
-## Filled reimbursement failure after successful mint
+### Filled reimbursement failure after successful mint
 
 ```bash
 source scripts/env.sh
@@ -892,7 +979,7 @@ suites. Only the five task-authorized files changed; staging remains empty and
 HEAD remains `4adbcc1`. No stage, commit, remote configuration or publication was
 performed.
 
-## Cancelled receipt refunds on a local validator
+### Cancelled receipt refunds on a local validator
 
 ```bash
 source scripts/env.sh
@@ -974,7 +1061,7 @@ typecheck/import checks, aggregate build and whitespace checks passed. SHA-256
 comparisons preserve production Rust, the compiled SBF binary, complete JSON IDL,
 generated TypeScript types and both dependency lockfiles.
 
-## Cancelled refund transfer rollback on a local validator
+### Cancelled refund transfer rollback on a local validator
 
 ```bash
 source scripts/env.sh
@@ -1061,7 +1148,7 @@ Foundry reported unchanged sources and skipped recompilation; its attempt to
 flush the external signature cache hit a read-only filesystem warning without
 failing the check or changing global tooling.
 
-## Terminal observation against live Anvil
+### Terminal observation against live Anvil
 
 ```bash
 source scripts/env.sh
@@ -1106,7 +1193,7 @@ delivery, completed cross-chain flow, production finality or restart recovery.
 MissingReceipt establishes neither Unseen nor permission to resend. Credentials
 remain separate from public evidence.
 
-## Confirmed Filled delivery to Solana
+### Confirmed Filled delivery to Solana
 
 ```bash
 source scripts/env.sh
