@@ -79,8 +79,12 @@ unavailability can delay completion indefinitely. EVM N+2 is a local test policy
 not production finality. Recovery assumes running local nodes and does not cover
 machine/node restart, broadcast-crash recovery or concurrent workers. There is
 no production bridge, live venue integration, sell/redeem or public deployment;
-tests are not an external security audit. Clean-checkout installation has not
-been verified. Existing LTO and optional bigint native-binding warnings remain;
+tests are not an external security audit. The earlier documentation-only review
+above is historical; Task 6D subsequently verified installation from a clean
+local clone, dependency preparation, offline regression and demo on 2026-10-06, as detailed
+in [setup evidence](#setup-and-dependency-preparation). Full regression remains
+the previously completed original-checkout run. Existing LTO and optional bigint
+native-binding warnings remain;
 the latter uses its JavaScript fallback.
 
 ## Pinned environment
@@ -133,8 +137,42 @@ cmake, clang, and libudev-dev were absent and not required by these builds.
 
 Native Foundry 1.5.1 must already be available; `install-tools.sh` does not
 install it. Select its existing `~/.foundry/bin` location if necessary before
-the installer invokes the tool check. These commands describe dependency
-preparation; installation from a clean checkout has not been verified.
+the installer invokes the tool check. On 2026-10-06, Task 6D verified the
+documented installation/dependency preparation from a clean local clone of
+commit `eca070922d868beb09682260c4834ff8a1d52d8a` on the existing Ubuntu/WSL host.
+`bash scripts/install-tools.sh`, `source scripts/env.sh`,
+`(cd harness && npm ci --ignore-scripts --no-audit)` (91 packages), and
+`bash scripts/check-tools.sh` succeeded. The clone used its own repository-local
+tools and dependency caches, existing native Foundry 1.5.1/system prerequisites,
+and the existing upstream `~/.cache/solana/v1.54/platform-tools/` cache.
+Downloads were obtained anew and verified by the installer; no original
+download archives, installed outputs, artifacts, credentials or manifests were
+imported. No global upgrades or shell-profile changes were made.
+
+From that clone, `bash scripts/check-regression.sh --offline` passed all
+**17/17 stages**, then `bash scripts/run-demo.sh` passed both separate fresh
+deployments; both commands exited zero. Filled recovery reached `Settled`,
+Cancelled recovery reached `Refunded`, and each then returned `Complete` with
+zero further submissions. Both runners verified stopped owned processes and
+released ports; an independent final check found no surviving runners/nodes and
+all reserved TCP/UDP ports free. SBF, JSON/TypeScript IDL and Solidity artifacts
+were generated under the clone's `solana/target/` and `evm/out/`. All 131 tracked
+files, including pins/lockfiles, remained unchanged in the clone; fingerprints
+of the original 131 tracked files and 31 public generated artifacts also matched
+before these documentation edits.
+
+Local evidence is preserved under `.runtime/clean-checkout-jl2ytsbp/`:
+`verification-evidence.json`, `preflight.json`, `selected-environment.json`,
+`setup-commands.log`, `setup-install.log`, `npm-ci.log`, `check-tools.log`,
+`verification-commands.log`, `offline.log`, and `demo.log`. The fresh clone is
+its `repo/` subdirectory; its `.runtime/regression-z82otwpr/regression-summary.json`
+records the offline run, and `.runtime/demo-a__fj8wn/demo-summary.json` references
+this invocation's `.runtime/dual-chain-setup-qpkjd5rg/` Filled evidence and
+`.runtime/dual-chain-setup-uwmgzji6/` Cancelled evidence. Detailed installer/build
+logs remain in that clone's `.local/logs/`. Full regression was not rerun; its
+previous original-checkout result above remains the full-regression evidence.
+This verifies a clean local checkout on an existing host, not a fresh machine,
+empty caches, CI, production deployment or production finality.
 
 Run from the repository root:
 

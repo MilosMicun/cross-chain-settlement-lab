@@ -121,8 +121,13 @@ Agave 4.1.2, SBF platform-tools v1.54, Node 24.21.0/npm 11.19.0 and Solidity
 SBF platform-tools also use the upstream user cache. The demo and regression
 wrappers build existing artifacts and never install tools themselves. Offline
 mode launches no blockchain nodes, but still requires build dependencies and
-caches; it does not guarantee network-free dependency resolution. Installation
-from a clean checkout has not been verified. See
+caches; it does not guarantee network-free dependency resolution. On 2026-10-06,
+installation/dependency preparation, **17/17 offline stages** and both demo
+scenarios were verified from a clean local clone of `eca0709` on the existing
+Ubuntu/WSL host, using existing native Foundry 1.5.1/system prerequisites and
+the upstream SBF platform-tools cache. Full regression remains the previously
+completed original-checkout run. This was not a fresh-machine, empty-cache,
+CI, production deployment or production-finality test. See
 [development setup](docs/development.md#setup-and-dependency-preparation) for details.
 
 The demo runs Filled recovery and Cancelled recovery on **separate fresh
