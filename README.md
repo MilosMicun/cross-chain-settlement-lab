@@ -2,10 +2,9 @@
 
 [![Offline regression](https://github.com/MilosMicun/cross-chain-settlement-lab/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/MilosMicun/cross-chain-settlement-lab/actions/workflows/ci.yml)
 
-A local cross-chain settlement lab using real Rust/Anchor on Solana and
-Solidity on Anvil, with mock assets and a deterministic mock venue. The user's
-Solana deposit stays in escrow while a prefunded executor buys the EVM YES
-position with its own liquidity.
+A local Solana-to-EVM purchase settlement prototype: the user's deposit stays
+in Solana escrow while a prefunded executor pays for the EVM purchase.
+Confirmed operator-attested outcomes enable source settlement or refund.
 
 ![Interactive local settlement CLI: select both scenarios, inspect verified Filled and Cancelled results and public evidence, then finish](docs/assets/demo.gif)
 

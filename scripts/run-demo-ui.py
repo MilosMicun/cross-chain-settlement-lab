@@ -26,6 +26,10 @@ CHOICES = (
     ("both", "Both scenarios"),
     ("exit", "Exit"),
 )
+PURCHASE_EXPLANATION = (
+    "User cash stays in Solana escrow.",
+    "The executor funds an EVM purchase with its own liquidity.",
+)
 
 
 def existing_demo():
@@ -165,6 +169,9 @@ class Terminal:
                     self.welcome()
                     self.line(self.styled("\nLOCAL RUN / SELECT SCENARIO", "1;33"))
                     self.line("Separate fresh deployments • Real mock-token execution\n")
+                    for row in PURCHASE_EXPLANATION:
+                        self.line(row)
+                    self.line()
                     for index, (_, label) in enumerate(CHOICES):
                         row = (" > " if index == selected else "   ") + f"[{index + 1:02}] {label} "
                         self.line(self.styled(row, "1;30;43") if index == selected else row)
@@ -178,6 +185,9 @@ class Terminal:
                         self.line("\nSelected local demo: " + CHOICES[selected][1])
                         return CHOICES[selected][0]
         self.welcome()
+        self.line()
+        for row in PURCHASE_EXPLANATION:
+            self.line(row)
         self.line()
         for number, (_, label) in enumerate(CHOICES, 1):
             self.line(f"  {number}  {label}")
@@ -194,7 +204,23 @@ class Terminal:
             self.line("Invalid selection; choose 1-4.")
 
     def result_rows(self, result):
+        explanation = {
+            "Filled": [
+                "User receives mock YES on Solana.",
+                "Executor receives reimbursement from source escrow.",
+            ],
+            "Cancelled": [
+                "Confirmed EVM cancellation and the user's cancellation request permit the source refund.",
+                "No YES is issued.",
+            ],
+        }[result["recoveredTerminalOutcome"]]
         rows = [
+            "Outcome and recovery:",
+            *explanation,
+            "Fresh application processes recover the outcome from chain state.",
+            "Complete means no further submissions.",
+            "",
+            "Verified chain results:",
             f"Terminal outcome: {result['recoveredTerminalOutcome']}",
             f"Source lifecycle: {result['finalSourceState']}",
             f"Separate fresh deployment: {result['freshDeployment']}",

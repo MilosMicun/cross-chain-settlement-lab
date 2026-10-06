@@ -22,7 +22,7 @@ Show
 Type "bash scripts/run-demo-ui.sh"
 Enter
 Wait+Screen@10s /LOCAL RUN \/ SELECT SCENARIO/
-Sleep 1s
+Sleep 3s
 Down
 Sleep 600ms
 Down
@@ -39,7 +39,7 @@ Hide
 Wait+Screen@4000s /VERIFIED \/ Filled.*result 1\/1/
 Wait+Screen@10s /Enter: run Cancelled local demo/
 Show
-Sleep 7s
+Sleep 9s
 Screenshot filled.png
 Sleep 300ms
 Type "e"
@@ -59,7 +59,7 @@ Hide
 Wait+Screen@2100s /VERIFIED \/ Cancelled.*result 2\/2/
 Wait+Screen@10s /Enter: finish demo/
 Show
-Sleep 7s
+Sleep 9s
 Screenshot cancelled.png
 Sleep 300ms
 Left
