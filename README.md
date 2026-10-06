@@ -173,6 +173,42 @@ validator integration. Node parent tests and suites repeated by multiple runners
 are not combined into a grand total. Detailed historical results remain in
 [development records](docs/development.md#historical-verification-records).
 
+### Offline CI
+
+The [GitHub Actions workflow](.github/workflows/ci.yml) runs on pushes to `main`,
+pull requests targeting `main`, and manual dispatch, on an Ubuntu 24.04 x86_64
+runner. It invokes all **17 existing offline regression stages**, including
+builds, locked Rust checks/tests, strict Forge lint, the existing fuzz/invariant
+settings, and offline TypeScript suites. It launches no blockchain nodes and
+does not cover validator integration, live cross-chain scenarios, or production
+finality. No successful hosted CI run has been verified yet; the historical
+local evidence above remains separate.
+
+Run the same setup and regression entry point locally:
+
+```bash
+bash scripts/check-ci.sh
+```
+
+The entry point checks for at least 12 GiB of available repository disk space
+before installation (later resource exhaustion can still fail the run), verifies
+the pinned tools, and installs missing native Foundry **1.5.1** from an official
+release asset pinned by asset ID and SHA-256 into ignored repository-local
+storage. That verified asset reports `1.5.1-stable`, matching the existing tool
+check; the `v1.5.1`-tagged archive reports `1.5.1-v1.5.1` and is not substituted.
+It reuses `scripts/install-tools.sh`, `scripts/env.sh`, and
+`npm ci --ignore-scripts --no-audit`; it refuses a mismatched selected Foundry
+version. Setup requires downloads on a fresh runner; existing local caches do
+not establish fresh-runner success. CI starts without dependency caching.
+
+Each invocation announces an ignored `.runtime/ci-*/reports` directory with
+selected public setup, version, dependency, build and stage logs and summaries,
+including on failure. CI uploads only those selected report files with seven-day
+retention, excluding wallets/keypairs, credentials, environment dumps, installed
+tools and dependency caches. Cancellation or hard runner termination can prevent
+final collection/upload. The first hosted run will be checked after review and
+manual publication.
+
 ## Trust and limitations
 
 - The operator and RPC are trusted. Receipt hashes bind contents, not execution
@@ -207,3 +243,6 @@ production ownership, audited software or a contribution to 4pto, Predikt or
 LI.FI. The existing [public references in the specification](SPEC.md#purpose-and-scope)
 establish relevance only; they imply no knowledge of product internals,
 endorsement or integration with those systems.
+
+This repository's original work is covered by the [MIT license](LICENSE).
+Dependencies retain their own licenses.

@@ -1,0 +1,50 @@
+name: Offline regression
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: offline-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  offline:
+    runs-on: ubuntu-24.04 # GitHub-hosted x86_64 runner
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+
+      - name: Setup and all 17 offline stages
+        id: ci
+        timeout-minutes: 80 # Leave time for evidence upload after a failure.
+        shell: bash
+        run: bash scripts/check-ci.sh
+
+      - name: Retain selected public reports
+        if: ${{ always() && steps.ci.outputs.report-path != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: offline-ci-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ steps.ci.outputs.report-path }}/ci-summary.json
+            ${{ steps.ci.outputs.report-path }}/setup.log
+            ${{ steps.ci.outputs.report-path }}/npm-ci.log
+            ${{ steps.ci.outputs.report-path }}/versions.log
+            ${{ steps.ci.outputs.report-path }}/regression.log
+            ${{ steps.ci.outputs.report-path }}/regression-summary.json
+            ${{ steps.ci.outputs.report-path }}/stages/*.log
+            ${{ steps.ci.outputs.report-path }}/build/*.log
+            ${{ steps.ci.outputs.report-path }}/install/*.log
+          include-hidden-files: true # Explicit files staged under ignored .runtime only.
+          if-no-files-found: error
+          retention-days: 7
