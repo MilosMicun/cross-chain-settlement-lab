@@ -2,16 +2,21 @@
 """Present the existing local recovery runners and their validated public evidence."""
 
 import argparse
+from contextlib import contextmanager
 import importlib.util
 import json
 import os
 from pathlib import Path
+import select
 import shutil
 import signal
 import subprocess
 import sys
 import tempfile
+import termios
+import textwrap
 import time
+import tty
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -43,11 +48,70 @@ def exit_status(code):
     return code if code >= 0 else 128 - code
 
 
+class TerminalInterrupted(Exception):
+    def __init__(self, signum):
+        self.signum = signum
+        super().__init__(f"Interrupted by signal {signum}")
+
+
+@contextmanager
+def keyboard():
+    """Use cbreak only while reading UI keys, preserving signals and echo elsewhere."""
+    fd = sys.stdin.fileno()
+    settings = termios.tcgetattr(fd)
+    handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+
+    def interrupted(signum, _frame):
+        raise TerminalInterrupted(signum)
+
+    try:
+        for sig in handlers:
+            signal.signal(sig, interrupted)
+        tty.setcbreak(fd)
+        print("\033[?25l", end="", flush=True)
+        yield fd
+    finally:
+        # Restore input first, including on EOF, rendering errors, or a signal.
+        try:
+            termios.tcsetattr(fd, termios.TCSADRAIN, settings)
+        finally:
+            for sig, handler in handlers.items():
+                signal.signal(sig, handler)
+            print("\033[?25h", end="", flush=True)
+
+
+def read_key(fd):
+    """Decode arrow keys with a bounded escape-sequence wait; accept both TTY forms."""
+    sequences = {b"\x1b[" + suffix: name for suffix, name in
+                 ((b"A", "up"), (b"B", "down"), (b"C", "right"), (b"D", "left"))}
+    sequences.update({key.replace(b"[", b"O"): value for key, value in list(sequences.items())})
+    data = os.read(fd, 1)
+    if not data:
+        raise ValueError("Terminal input closed during navigation")
+    if data == b"\x1b":
+        deadline = time.monotonic() + 0.15
+        while any(key.startswith(data) for key in sequences):
+            if data in sequences:
+                return sequences[data]
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not select.select([fd], [], [], remaining)[0]:
+                break
+            part = os.read(fd, 1)
+            if not part:
+                raise ValueError("Terminal input closed during navigation")
+            data += part
+        return "escape"
+    if data in (b"\r", b"\n"):
+        return "enter"
+    return data.decode("ascii", errors="ignore").lower()
+
+
 class Terminal:
-    def __init__(self, no_color=False):
+    def __init__(self, no_color=False, automatic=False):
         capable = sys.stdout.isatty() and os.environ.get("TERM", "dumb") != "dumb"
         self.color = capable and not no_color and "NO_COLOR" not in os.environ
         self.animated = self.color
+        self.interactive = self.color and sys.stdin.isatty() and not automatic
 
     def styled(self, text, style):
         return f"\033[{style}m{text}\033[0m" if self.color else text
@@ -64,7 +128,56 @@ class Terminal:
             self.line("  " + row if row else "")
         self.line(self.styled("+" + "-" * (width - 1), "2"))
 
+    def welcome(self):
+        self.line(self.styled("CROSS-CHAIN  /  SETTLEMENT LAB", "1;36"))
+        self.line("Local mock-token demo • Trusted operator/RPC")
+
+    def screen(self, title, rows, footer, offset=0):
+        """Page long content instead of clipping paths or monetary fields on small TTYs."""
+        columns, height = shutil.get_terminal_size((80, 24))
+        width = max(12, columns - 2)
+        content = [part for row in rows for part in
+                   (textwrap.wrap(row, width=width, subsequent_indent="  ") or [""])]
+        heading = ["CROSS-CHAIN  /  SETTLEMENT LAB", "Local mock-token demo • Trusted operator/RPC", "", title]
+        heading = [part for row in heading for part in (textwrap.wrap(row, width) or [""])]
+        controls = [part for row in footer for part in textwrap.wrap(row, width)]
+        capacity = max(1, height - len(heading) - len(controls) - 3)
+        offset = min(max(0, offset), max(0, len(content) - capacity))
+        print("\033[2J\033[H", end="", flush=True)
+        for index, row in enumerate(heading):
+            self.line(self.styled(row, "1;36" if index == 0 else "1;32")
+                      if index == 0 or row == title else row)
+        self.line()
+        for row in content[offset:offset + capacity]:
+            self.line(" " + row)
+        self.line(self.styled(f"Lines {offset + 1}-{min(offset + capacity, len(content))} of {len(content)}"
+                              " • Up/Down to scroll", "2"))
+        for row in controls:
+            self.line(self.styled(row, "2"))
+        return offset
+
     def select(self):
+        if self.interactive:
+            selected = 0
+            with keyboard() as fd:
+                while True:
+                    print("\033[2J\033[H", end="", flush=True)
+                    self.welcome()
+                    self.line(self.styled("\nLOCAL RUN / SELECT SCENARIO", "1;33"))
+                    self.line("Separate fresh deployments • Real mock-token execution\n")
+                    for index, (_, label) in enumerate(CHOICES):
+                        row = (" > " if index == selected else "   ") + f"[{index + 1:02}] {label} "
+                        self.line(self.styled(row, "1;30;43") if index == selected else row)
+                    self.line(self.styled("\nUp/Down: choose • Enter: run • Ctrl+C: exit", "2"))
+                    key = read_key(fd)
+                    if key in ("up", "down"):
+                        selected = (selected + (1 if key == "down" else -1)) % len(CHOICES)
+                    elif key == "enter":
+                        print("\033[2J\033[H", end="", flush=True)
+                        self.welcome()
+                        self.line("\nSelected local demo: " + CHOICES[selected][1])
+                        return CHOICES[selected][0]
+        self.welcome()
         self.line()
         for number, (_, label) in enumerate(CHOICES, 1):
             self.line(f"  {number}  {label}")
@@ -80,7 +193,7 @@ class Terminal:
                 raise ValueError("Invalid selection; choose 1-4")
             self.line("Invalid selection; choose 1-4.")
 
-    def result(self, result):
+    def result_rows(self, result):
         rows = [
             f"Terminal outcome: {result['recoveredTerminalOutcome']}",
             f"Source lifecycle: {result['finalSourceState']}",
@@ -102,11 +215,52 @@ class Terminal:
             f"Finalized delivery slot: {result['finalizedSolanaDeliverySlot']}",
             f"Cleanup: owned processes stopped={result['cleanup']['ownedProcessesStopped']}; "
             f"ports released={result['cleanup']['portsReleased']}",
+        ])
+        return rows
+
+    def evidence_rows(self, result):
+        return [
             "Public evidence (full transaction identifiers included):",
             *["  " + path for path in result["publicEvidence"]],
             "Runner log: " + result["logs"][0],
-        ])
-        self.card("VERIFIED / " + result["recoveredTerminalOutcome"], rows)
+        ]
+
+    def result(self, result):
+        self.card("VERIFIED / " + result["recoveredTerminalOutcome"],
+                  self.result_rows(result) + self.evidence_rows(result))
+
+    def review(self, results, next_scenario, summary_path, supervisor):
+        """Inspect each validated result before continuing, with a separate evidence view."""
+        index = len(results) - 1
+        evidence = False
+        offset = 0
+        with keyboard() as fd:
+            while True:
+                if supervisor.interruption is not None:
+                    raise TerminalInterrupted(supervisor.interruption)
+                result = results[index]
+                title = ("PUBLIC EVIDENCE" if evidence else "VERIFIED") + " / " + result["recoveredTerminalOutcome"]
+                title += f" • result {index + 1}/{len(results)}"
+                rows = (self.evidence_rows(result) + ["Public summary: " + str(summary_path.relative_to(ROOT))]
+                        if evidence else self.result_rows(result))
+                footer = (["E / Esc / Enter: back to result"] if evidence else
+                          ["Left/Right: completed results • E: public evidence",
+                           "Enter: " + (f"run {next_scenario} local demo" if next_scenario else "finish demo")])
+                offset = self.screen(title, rows, footer, offset)
+                key = read_key(fd)
+                if key in ("up", "down"):
+                    offset += 1 if key == "down" else -1
+                elif evidence and key in ("e", "escape", "enter"):
+                    evidence, offset = False, 0
+                elif not evidence and key == "e":
+                    evidence, offset = True, 0
+                elif not evidence and key in ("left", "right"):
+                    index = min(max(0, index + (1 if key == "right" else -1)), len(results) - 1)
+                    offset = 0
+                elif not evidence and key == "enter":
+                    print("\033[2J\033[H", end="", flush=True)
+                    self.welcome()
+                    return
 
 
 class Supervisor:
@@ -171,15 +325,17 @@ def main():
         description=__doc__, allow_abbrev=False,
         epilog="Builds existing artifacts; installs no tools. Both scenarios use separate fresh deployments. "
                "Logs/public evidence remain in .runtime/. On interruption, waits for runner cleanup. "
+               "Interactive TTY: arrows/Enter select; E opens evidence; Left/Right browse completed results. "
                "Requires the same pinned tools and Linux namespace permissions as run-demo.sh.")
     parser.add_argument("--scenario", choices=[choice[0] for choice in CHOICES],
-                        help="Skip the numbered menu")
-    parser.add_argument("--no-color", action="store_true", help="Disable ANSI color")
+                        help="Skip the menu and result pauses")
+    parser.add_argument("--no-color", action="store_true",
+                        help="Disable ANSI color; use the plain numbered menu without result pauses")
     args = parser.parse_args()
-    terminal = Terminal(args.no_color)
-    terminal.line(terminal.styled("Cross-chain settlement lab", "1;35"))
-    terminal.line("Local mock-token demo • Trusted operator/RPC")
+    terminal = Terminal(args.no_color, automatic=args.scenario is not None)
     try:
+        if args.scenario:
+            terminal.welcome()
         selection = args.scenario or terminal.select()
     except ValueError as error:
         terminal.line(f"ERROR: {error}")
@@ -187,6 +343,12 @@ def main():
     except KeyboardInterrupt:
         terminal.line("\nInterrupted; no demo started.")
         return 130
+    except TerminalInterrupted as error:
+        terminal.line("\nInterrupted; no demo started.")
+        return 128 + error.signum
+    except (OSError, termios.error) as error:
+        terminal.line(f"ERROR: Terminal navigation failed: {error}")
+        return 1
     if selection == "exit":
         terminal.line("Exited; no demo started.")
         return 0
@@ -245,14 +407,21 @@ def main():
                     return failure("Interrupted during evidence validation", 128 + supervisor.interruption)
                 summary["scenarios"].append(result)
                 persist()
-                terminal.result(result)
+                if terminal.interactive:
+                    completed = len(summary["scenarios"])
+                    next_scenario = scenarios[completed][2] if completed < len(scenarios) else None
+                    terminal.review(summary["scenarios"], next_scenario, summary_path, supervisor)
+                else:
+                    terminal.result(result)
         if supervisor.interruption is not None:
             return failure("Interrupted before completion", 128 + supervisor.interruption)
         summary.update(status="passed", exitCode=0)
         persist()
         terminal.line(f"\nVerified {len(scenarios)} scenario(s). Public summary: {summary_path.relative_to(ROOT)}")
         return 0
-    except (ValueError, KeyError, TypeError, IndexError, AttributeError, OSError) as error:
+    except TerminalInterrupted as error:
+        return failure(str(error), 128 + error.signum)
+    except (ValueError, KeyError, TypeError, IndexError, AttributeError, OSError, termios.error) as error:
         return failure(f"Evidence/execution check failed: {error}", 1)
 
 
